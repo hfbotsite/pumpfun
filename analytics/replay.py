@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import csv
+import io
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -242,6 +243,61 @@ def _clamp_withdraw(amount: int, reserve: int) -> int:
 # --------------------------------------------------------------------------- #
 #  CSV: чтение и запись
 # --------------------------------------------------------------------------- #
+def parse_events_csv_text(text: str) -> list[TradeEvent]:
+    """Разбирает CSV-текст (канонический формат реплея) в события.
+
+    Веб-форма дашборда принимает CSV как текст, поэтому файл не нужен.
+
+    Args:
+        text: Содержимое CSV с заголовком ``REQUIRED_COLUMNS``.
+
+    Returns:
+        События в порядке следования строк (сортировку по времени делает
+        вызывающий код при необходимости).
+
+    Raises:
+        ReplayError: Если нет заголовка или колонки битые.
+    """
+    reader = csv.DictReader(io.StringIO(text))
+    missing = [name for name in REQUIRED_COLUMNS if name not in (reader.fieldnames or [])]
+    if missing:
+        raise ReplayError(f"в CSV отсутствуют колонки: {', '.join(missing)}")
+    return [
+        _row_to_event(row, index + 2)
+        for index, row in enumerate(reader)
+        if any((value or "").strip() for value in row.values() if value is not None)
+    ]
+
+
+def events_to_csv_text(events: list[TradeEvent]) -> str:
+    """Сериализует события в CSV-текст канонического формата.
+
+    Args:
+        events: События сделок.
+
+    Returns:
+        Текст CSV (заголовок + строки).
+    """
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=list(REQUIRED_COLUMNS))
+    writer.writeheader()
+    for event in events:
+        writer.writerow(
+            {
+                "signature": event.signature,
+                "pool_address": event.pool_address,
+                "base_mint": event.base_mint,
+                "dex": event.dex.value,
+                "side": event.side.value,
+                "sol_amount": f"{event.sol_amount:.9f}",
+                "token_amount": f"{event.token_amount:.6f}",
+                "wallet": event.wallet or "",
+                "timestamp": f"{event.timestamp:.3f}",
+            }
+        )
+    return buffer.getvalue()
+
+
 def _read_rows(path: Path) -> list[dict[str, str]]:
     """Читает CSV и проверяет наличие обязательных колонок.
 

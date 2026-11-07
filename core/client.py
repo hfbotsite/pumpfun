@@ -429,6 +429,32 @@ class SolanaRpcClient:
             )
         return statuses
 
+    async def get_signatures_for_address(
+        self,
+        address: str,
+        *,
+        limit: int = 500,
+        commitment: str = "confirmed",
+    ) -> list[dict[str, Any]]:
+        """Возвращает историю подписей адреса (новые впереди).
+
+        Args:
+            address: Адрес аккаунта (например, bonding curve).
+            limit: Максимум записей (лимит узла — 1000).
+            commitment: Уровень подтверждения.
+
+        Returns:
+            Список записей ``{signature, slot, err, blockTime, ...}``.
+
+        Raises:
+            RpcError: При ошибке запроса.
+        """
+        result = await self._call(
+            "getSignaturesForAddress",
+            [address, {"limit": limit, "commitment": commitment}],
+        )
+        return [item for item in (result or []) if isinstance(item, dict)]
+
     async def send_transaction(
         self,
         raw_transaction: bytes,

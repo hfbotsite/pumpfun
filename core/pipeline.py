@@ -29,17 +29,27 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
+from analytics.backtester import Backtester
 from analytics.indicators import StreamingIndicators
-from config.settings import settings
+from analytics.replay import (
+    ReplayPoolConfig,
+    ReplayScenario,
+    events_to_csv_text,
+    parse_events_csv_text,
+)
+from config.settings import LAMPORTS_PER_SOL, settings
 from core.client import RpcError, SolanaRpcClient, SolanaWsClient
 from core.dashboard import DashboardServer
+from core.decoders import PumpTradeEvent
 from core.dry_run import DryRunExecutor
 from core.executor import OrderExecutor
-from core.listener import PoolStreamListener
+from core.listener import PoolStreamListener, extract_pump_trade_events
 from core.orders import TraderExecutor
 from core.persistence import PortfolioStore
 from core.pool_registry import TrackedPool
@@ -47,7 +57,16 @@ from core.portfolio import PortfolioManager, PortfolioStats
 from core.screening import ScreeningVerdict, TokenScreeningService
 from core.security import TokenSecurityResolver
 from core.trader import MomentumTrader
-from models.trade_data import PoolInfo, SignalAction, TradeEvent, TradeSide
+from core.tx_builder import derive_bonding_curve
+from models.trade_data import (
+    DEXType,
+    PoolInfo,
+    SignalAction,
+    TokenSecurity,
+    TradeEvent,
+    TradeSide,
+)
+from utils.constants import PUMP_TOKEN_DECIMALS, SOL_DECIMALS
 from utils.latency import LatencyRegistry
 from utils.logger import get_logger
 from utils.spl import load_keypair
@@ -330,6 +349,7 @@ class LivePipeline:
             self._dashboard = DashboardServer(
                 self.dashboard_snapshot,
                 actions=self._dashboard_action,
+                backtest_runner=self._dashboard_backtest,
                 auth_user=settings.dashboard_user,
                 auth_password=settings.dashboard_password,
                 host=settings.dashboard_host,
@@ -682,6 +702,269 @@ class LivePipeline:
         if outcome.get("ok") and action == "sell":
             self._pnl_curve.append((time.time(), trader.portfolio.stats.pnl_sol))
         return outcome
+
+    # ------------------------------------------------------------- Бэктест
+    @staticmethod
+    def _extract_mint(raw: str) -> str | None:
+        """Извлекает mint из ссылки pump.fun или сырого base58-адреса.
+
+        Args:
+            raw: URL вида ``https://pump.fun/coin/<MINT>`` или сам адрес.
+
+        Returns:
+            Кандидат в mint (base58, 32-44 символа) или ``None``.
+        """
+        match = re.search(r"[1-9A-HJ-NP-Za-km-z]{32,44}", raw or "")
+        return match.group(0) if match else None
+
+    def _backtest_sample_csv(self) -> str:
+        """Готовит демо-CSV: импульс, вход, каскад TP на пуле 90 SOL.
+
+        Returns:
+            Текст CSV канонического формата.
+        """
+        events: list[TradeEvent] = []
+        seeds = ((1.0, 4_000_000), (1.2, 4_000_000), (1.4, 4_000_000), (1.6, 4_000_000))
+        pushes = ((1.8, 36_000_000), (2.0, 30_000_000), (2.2, 25_000_000))
+        for index, (timestamp, tokens) in enumerate(seeds):
+            events.append(
+                TradeEvent(
+                    signature=f"demo-seed-{index}",
+                    pool_address="DemoPool1111111111111111111111111111111",
+                    base_mint="DemoMint11111111111111111111111111111111",
+                    dex=DEXType.PUMP_FUN,
+                    side=TradeSide.BUY,
+                    sol_amount=0.6,
+                    token_amount=tokens,
+                    wallet="DemoUser111111111111111111111111111111111",
+                    timestamp=timestamp,
+                )
+            )
+        for index, (timestamp, tokens) in enumerate(pushes):
+            events.append(
+                TradeEvent(
+                    signature=f"demo-push-{index}",
+                    pool_address="DemoPool1111111111111111111111111111111",
+                    base_mint="DemoMint11111111111111111111111111111111",
+                    dex=DEXType.PUMP_FUN,
+                    side=TradeSide.BUY,
+                    sol_amount=8.0,
+                    token_amount=tokens,
+                    wallet="DemoUser111111111111111111111111111111111",
+                    timestamp=timestamp,
+                )
+            )
+        return events_to_csv_text(events)
+
+    async def _backtest_events(
+        self,
+        events: list[TradeEvent],
+        *,
+        quote_reserve: int,
+        base_reserve: int,
+        creator: str | None,
+        trade_amount_sol: float,
+        entry_window: float,
+        exit_window: float,
+        max_positions: int,
+    ) -> dict[str, object]:
+        """Прогоняет события через живую стратегию и возвращает отчёт.
+
+        Args:
+            events: События сделок (хронологически).
+            quote_reserve: Начальный виртуальный резерв SOL, лампорты.
+            base_reserve: Начальный резерв токенов, base units.
+            creator: Кошелёк создателя (для прямого маршрута).
+            trade_amount_sol: Размер входа, SOL.
+            entry_window: Окно входа, c.
+            exit_window: Окно выхода, c.
+            max_positions: Максимум одновременных позиций.
+
+        Returns:
+            Отчёт :meth:`BacktestReport.to_dict`.
+        """
+        first = events[0]
+        scenario = ReplayScenario(
+            pool=ReplayPoolConfig(
+                pool_address=first.pool_address,
+                base_mint=first.base_mint,
+                dex=first.dex,
+                quote_reserve=quote_reserve,
+                base_reserve=base_reserve,
+                base_decimals=PUMP_TOKEN_DECIMALS,
+                quote_decimals=SOL_DECIMALS,
+                creator=creator,
+            ),
+            events=tuple(events),
+            security=TokenSecurity(
+                mint_authority=None, freeze_authority=None, lp_burned_pct=100.0
+            ),
+        )
+        backtester = Backtester(
+            trade_amount_sol=trade_amount_sol,
+            max_concurrent_positions=max_positions,
+            entry_window_seconds=entry_window,
+            exit_window_seconds=exit_window,
+        )
+        report = await backtester.run(scenario)
+        return {"ok": True, "report": report.to_dict()}
+
+    async def _dashboard_backtest(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Запускает бэктест по запросу из дашборда.
+
+        Режимы: ``sample`` — вернуть демо-CSV; ``csv`` — прогнать текст CSV;
+        ``mint`` — скачать историю сделок bonding curve через Helius
+        (getSignaturesForAddress + getTransaction), разобрать настоящие
+        TradeEvent-логи и прогнать тест. История берётся ограниченной
+        порцией (``max_tx``), начальное состояние пула сеется виртуальными
+        резервами самого раннего события.
+
+        Args:
+            payload: Параметры режима (см. форму в HTML).
+
+        Returns:
+            ``{ok, report}`` / ``{ok, csv}`` / ``{ok, error}``.
+        """
+        mode = str(payload.get("mode", "csv")).strip()
+        try:
+            trade_amount_sol = float(
+                payload.get("trade_amount_sol", settings.trade_amount_sol)
+            )
+            entry_window = float(
+                payload.get("entry_window_seconds", settings.entry_window_seconds)
+            )
+            exit_window = float(
+                payload.get("exit_window_seconds", settings.exit_window_seconds)
+            )
+            max_positions = int(payload.get("max_positions", 1))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "числовые параметры заданы неверно"}
+
+        if mode == "sample":
+            return {"ok": True, "csv": self._backtest_sample_csv()}
+
+        if mode == "csv":
+            text = str(payload.get("csv", "")).strip()
+            if not text:
+                return {"ok": False, "error": "CSV пуст"}
+            try:
+                events = parse_events_csv_text(text)
+            except Exception as exc:
+                return {"ok": False, "error": f"CSV не разобран: {exc}"}
+            if len(events) < 5:
+                return {"ok": False, "error": f"мало событий: {len(events)} < 5"}
+            events.sort(key=lambda e: e.timestamp)
+            try:
+                quote_reserve = int(
+                    float(payload.get("initial_sol", 90.0)) * LAMPORTS_PER_SOL
+                )
+                base_reserve = int(
+                    float(payload.get("initial_token", 600_000_000.0))
+                    * 10**PUMP_TOKEN_DECIMALS
+                )
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "начальные резервы заданы неверно"}
+            return await self._backtest_events(
+                events,
+                quote_reserve=quote_reserve,
+                base_reserve=base_reserve,
+                creator=str(payload.get("creator") or "") or None,
+                trade_amount_sol=trade_amount_sol,
+                entry_window=entry_window,
+                exit_window=exit_window,
+                max_positions=max_positions,
+            )
+
+        if mode == "mint":
+            return await self._backtest_from_mint(
+                payload,
+                trade_amount_sol=trade_amount_sol,
+                entry_window=entry_window,
+                exit_window=exit_window,
+                max_positions=max_positions,
+            )
+
+        return {"ok": False, "error": f"неизвестный режим бэктеста: {mode or 'пусто'}"}
+
+    async def _backtest_from_mint(
+        self,
+        payload: dict[str, Any],
+        *,
+        trade_amount_sol: float,
+        entry_window: float,
+        exit_window: float,
+        max_positions: int,
+    ) -> dict[str, object]:
+        """Бэктест по ссылке на монету: история кривой через Helius.
+
+        Args:
+            payload: ``{url, max_tx?}``.
+            trade_amount_sol: Размер входа, SOL.
+            entry_window: Окно входа, c.
+            exit_window: Окно выхода, c.
+            max_positions: Максимум одновременных позиций.
+
+        Returns:
+            ``{ok, report}`` или ``{ok, error}``.
+        """
+        mint = self._extract_mint(str(payload.get("url", "")))
+        if mint is None:
+            return {"ok": False, "error": "не удалось извлечь mint из ссылки"}
+        rpc = self._rpc
+        if rpc is None:
+            return {"ok": False, "error": "пайплайн не запущен"}
+        try:
+            curve_address = str(derive_bonding_curve(mint))
+        except Exception as exc:
+            return {"ok": False, "error": f"не удалось вывести bonding curve: {exc}"}
+        limit = min(1000, max(50, int(payload.get("max_tx", 500))))
+        signatures = await rpc.get_signatures_for_address(curve_address, limit=limit)
+        entries: list[tuple[float, str, PumpTradeEvent]] = []
+        for info in reversed(signatures):  # старые впереди
+            signature = str(info.get("signature", ""))
+            if not signature or info.get("err"):
+                continue
+            tx = await rpc.get_transaction(signature)
+            if not tx:
+                continue
+            logs = (tx.get("meta") or {}).get("logMessages") or []
+            block_time = float(tx.get("blockTime") or 0)
+            for parsed in extract_pump_trade_events(logs):
+                entries.append((block_time, signature, parsed))
+        if len(entries) < 5:
+            return {
+                "ok": False,
+                "error": (
+                    f"мало событий на кривой: {len(entries)} < 5 "
+                    "(токен мог мигрировать на AMM — нужен Jupiter-режим)"
+                ),
+            }
+        entries.sort(key=lambda item: item[0])
+        first_time, _first_sig, first_parsed = entries[0]
+        events = [
+            TradeEvent(
+                signature=signature,
+                pool_address=curve_address,
+                base_mint=mint,
+                dex=DEXType.PUMP_FUN,
+                side=TradeSide.BUY if parsed.is_buy else TradeSide.SELL,
+                sol_amount=parsed.sol_amount / 10**SOL_DECIMALS,
+                token_amount=parsed.token_amount / float(10**PUMP_TOKEN_DECIMALS),
+                wallet=parsed.user,
+                timestamp=block_time if block_time > 0 else first_time + index * 0.001,
+            )
+            for index, (block_time, signature, parsed) in enumerate(entries[1:], start=1)
+        ]
+        return await self._backtest_events(
+            events,
+            quote_reserve=first_parsed.virtual_sol_reserves,
+            base_reserve=first_parsed.virtual_token_reserves,
+            creator=first_parsed.user,
+            trade_amount_sol=trade_amount_sol,
+            entry_window=entry_window,
+            exit_window=exit_window,
+            max_positions=max_positions,
+        )
 
     # -------------------------------------------------------------- Внутреннее
     async def _register_watchlist(self) -> None:

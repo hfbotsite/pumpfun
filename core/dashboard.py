@@ -39,6 +39,9 @@ SnapshotProvider = Callable[[], dict[str, Any]]
 #: Обработчик ручного действия из дашборда (sell / average / sell_all).
 ActionHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
+#: Обработчик запуска бэктеста (sample / csv / mint).
+BacktestRunner = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+
 #: Время жизни сессионного токена, c (12 часов).
 SESSION_TTL_SECONDS: float = 12 * 3600
 
@@ -92,6 +95,25 @@ padding:4px 10px;font-size:12px;cursor:pointer}
 border-radius:6px;color:var(--fg);font-size:13px}
 #loginerr{color:var(--red);font-size:12px;min-height:16px}
 #action_status{font-size:12px;color:var(--dim);margin-left:10px}
+.backtab{display:block;margin:16px auto 0;width:190px;height:30px;border:none;
+border-radius:190px 190px 0 0;background:linear-gradient(180deg,#58a6ff,#1f6feb);
+color:#fff;font-weight:700;letter-spacing:.14em;font-size:13px;cursor:pointer}
+.backtab:hover{filter:brightness(1.15)}
+#backtest{display:none}
+.btrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0}
+.btrow label{color:var(--dim);font-size:12px}
+.btrow input,.btrow textarea{background:#0d1117;border:1px solid var(--line);
+border-radius:6px;color:var(--fg);padding:6px 8px;font-size:13px}
+.btrow textarea{width:100%;font:12px/1.4 Consolas,monospace}
+.modebadge{cursor:pointer;border:1px solid var(--line);border-radius:12px;
+padding:3px 12px;font-size:12px;color:var(--dim)}
+.modebadge.active{color:#fff;border-color:var(--blue);background:#1f6feb33}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:10px 0}
+.minicard{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.minicard .k{font-size:11px;color:var(--dim)}
+.minicard .v{font-size:18px;font-weight:600}
+.reasonbar{display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px}
+.reasonbar .bar{flex:1;margin:0}
 .poshead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .poshead h2{margin:0}
 .poshead .spacer{flex:1}
@@ -134,6 +156,48 @@ border-radius:6px;color:var(--fg);font-size:13px}
   <section class="card"><h2>Отбор токенов</h2><div id="screen"></div></section>
   <section class="card"><h2>Латентность (мс, p50 / p95)</h2><div id="latency">—</div></section>
   <section class="card wide"><h2>Лог (хвост)</h2><pre id="log">—</pre></section>
+
+  <button class="backtab" id="backtab">⌗ BACKTEST</button>
+  <section class="card wide" id="backtest" style="display:none">
+    <div class="poshead">
+      <h2>Бэктест стратегии на исторических сделках</h2>
+      <span class="spacer"></span>
+      <button class="btn mini" id="bt_sample" title="Заполнить форму демонстрационным CSV">демо-CSV</button>
+      <button class="btn" id="bt_run">ЗАПУСТИТЬ</button>
+    </div>
+    <div class="btrow">
+      <span class="modebadge active" id="bt_mode_mint" data-mode="mint">Ссылка pump.fun</span>
+      <span class="modebadge" id="bt_mode_csv" data-mode="csv">CSV-текст</span>
+      <span style="color:var(--dim);font-size:12px">движок: живая стратегия + dry-run исполнитель на исторических сделках</span>
+    </div>
+    <div class="btrow" id="bt_url_row">
+      <label>ссылка / mint:</label>
+      <input id="bt_url" style="flex:1;min-width:280px" placeholder="https://pump.fun/coin/<MINT> или адрес mint">
+      <label>транзакций:</label>
+      <input id="bt_maxtx" type="number" value="500" min="50" max="1000" style="width:90px">
+    </div>
+    <div id="bt_csv_row" style="display:none">
+      <div class="btrow">
+        <label>начальный резерв SOL:</label>
+        <input id="bt_initsol" type="number" value="90" style="width:90px">
+        <label>резерв токенов:</label>
+        <input id="bt_inittoken" type="number" value="600000000" style="width:150px">
+      </div>
+      <textarea id="bt_csv" rows="6" placeholder="signature,pool_address,base_mint,dex,side,sol_amount,token_amount,wallet,timestamp"></textarea>
+    </div>
+    <div class="btrow">
+      <label>размер входа, SOL:</label>
+      <input id="bt_amount" type="number" value="0.5" step="0.1" style="width:80px">
+      <label>окно входа, c:</label>
+      <input id="bt_entryw" type="number" value="5" style="width:60px">
+      <label>окно выхода, c:</label>
+      <input id="bt_exitw" type="number" value="2" style="width:60px">
+      <label>макс. позиций:</label>
+      <input id="bt_maxpos" type="number" value="1" style="width:50px">
+    </div>
+    <div id="bt_status" style="min-height:18px;color:var(--dim);font-size:12px"></div>
+    <div id="bt_results"></div>
+  </section>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -302,6 +366,74 @@ $('positions').onclick=async e=>{
   busy=false;document.querySelectorAll('button[data-act]').forEach(b=>b.disabled=false);
 };
 
+// --- Backtest ---
+let btMode='mint',btBusy=false;
+function setBtMode(m){btMode=m;
+ $('bt_mode_mint').classList.toggle('active',m==='mint');
+ $('bt_mode_csv').classList.toggle('active',m==='csv');
+ $('bt_url_row').style.display=m==='mint'?'flex':'none';
+ $('bt_csv_row').style.display=m==='csv'?'block':'none';}
+$('bt_mode_mint').onclick=()=>setBtMode('mint');
+$('bt_mode_csv').onclick=()=>setBtMode('csv');
+$('backtab').onclick=()=>{const b=$('backtest');const show=b.style.display==='none';
+ b.style.display=show?'block':'none';
+ $('backtab').textContent=show?'⌗ BACKTEST ▴':'⌗ BACKTEST';};
+$('bt_sample').onclick=async()=>{try{
+  const r=await api('/api/backtest/sample');if(r.status===401){showLogin();return}
+  setBtMode('csv');$('bt_csv').value=await r.text();
+  $('bt_status').textContent='демо-CSV загружен — жмите ЗАПУСТИТЬ';
+ }catch(e){$('bt_status').textContent='ошибка загрузки демо'}};
+
+function btCollect(){const p={mode:btMode,
+ trade_amount_sol:+$('bt_amount').value||0.5,
+ entry_window_seconds:+$('bt_entryw').value||5,
+ exit_window_seconds:+$('bt_exitw').value||2,
+ max_positions:+$('bt_maxpos').value||1};
+ if(btMode==='mint'){p.url=$('bt_url').value.trim();p.max_tx=+$('bt_maxtx').value||500}
+ else{p.csv=$('bt_csv').value;p.initial_sol=+$('bt_initsol').value||90;
+  p.initial_token=+$('bt_inittoken').value||600000000}
+ return p}
+
+function renderBacktest(r){
+ const cards=[['сделок',r.trades],['win-rate',fmt(r.win_rate_pct,1)+'%'],
+  ['PnL',sgn(r.pnl_sol,3)+' SOL'],['PnL %',sgn(r.pnl_pct,1)+'%'],
+  ['макс. просадка',fmt(r.max_drawdown_sol,3)+' SOL'],
+  ['ср. холд',dur(r.avg_hold_seconds)],['лучший',sgn(r.best_trade_pct,1)+'%'],
+  ['худший',sgn(r.worst_trade_pct,1)+'%']];
+ const total=Object.values(r.exit_reasons||{}).reduce((a,b)=>a+b,0)||1;
+ const reasons=Object.entries(r.exit_reasons||{}).map(([k,v])=>
+  `<div class="reasonbar"><span style="width:160px">${esc(k)}</span>
+   <span class="bar"><i style="width:${100*v/total}%;background:var(--blue)"></i></span><span>${v}</span></div>`).join('')||'—';
+ const rows=(r.closed_trades||[]).map(tr=>`<tr>
+  <td><code title="${esc(tr.base_mint)}">${esc(short(tr.base_mint))}</code></td>
+  <td>${esc(tr.exit_reason)}</td>
+  <td class="${cls(tr.pnl_pct)}">${sgn(tr.pnl_pct,1)}%</td>
+  <td class="${cls(tr.pnl_sol)}">${sgn(tr.pnl_sol,3)}</td>
+  <td>${dur(tr.hold_seconds)}</td>
+  <td>${price(tr.entry_price)} → ${price(tr.exit_price)}</td></tr>`).join('');
+ $('bt_results').innerHTML=`
+  <div class="cards">${cards.map(([k,v])=>`<div class="minicard"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('')}</div>
+  <h2 style="margin:8px 0">Причины выхода</h2>${reasons}
+  ${rows?`<h2 style="margin:8px 0">Сделки</h2><table><tr><th>токен</th><th>причина</th><th>PnL%</th><th>PnL SOL</th><th>холд</th><th>вход → выход</th></tr>${rows}</table>`:'<div style="color:var(--dim)">сделок не было — пороги входа не сработали на этих данных</div>'}`;
+}
+
+$('bt_run').onclick=async()=>{
+ if(btBusy||busy)return;
+ btBusy=true;busy=true;$('bt_run').disabled=true;
+ $('bt_status').textContent='гоняю бэктест… (большие истории могут занять время)';
+ $('bt_results').innerHTML='';
+ try{
+  const r=await api('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(btCollect())});
+  if(r.status===401){showLogin();return}
+  const d=await r.json();
+  if(!d.ok){$('bt_status').innerHTML=`<span class="neg">${esc(d.error||'ошибка')}</span>`}
+  else{$('bt_status').textContent=`готово: событий ${d.report.events}, длительность ${dur(d.report.duration_seconds)}`;
+   renderBacktest(d.report)}
+ }catch(e){$('bt_status').textContent='ошибка сети'}
+ btBusy=false;busy=false;$('bt_run').disabled=false;
+};
+
 async function boot(){
   if(!TOKEN){showLogin();return}
   const r=await api('/api/snapshot');
@@ -330,6 +462,7 @@ class DashboardServer:
         interval_seconds: float = 2.0,
         log_tail_size: int = 200,
         actions: ActionHandler | None = None,
+        backtest_runner: BacktestRunner | None = None,
         auth_user: str = "",
         auth_password: str = "",
     ) -> None:
@@ -343,6 +476,8 @@ class DashboardServer:
             log_tail_size: Ёмкость кольцевого буфера лога.
             actions: Обработчик ручных действий (``POST /api/action``);
                 без него действие вернёт 503.
+            backtest_runner: Обработчик запуска бэктеста
+                (``POST /api/backtest``); без него — 503.
             auth_user: Логин дашборда; аутентификация включена, только
                 если задан и ``auth_user``, и ``auth_password``.
             auth_password: Пароль дашборда (из ``DASHBOARD_PASSWORD``).
@@ -355,6 +490,7 @@ class DashboardServer:
         self._runner: web.AppRunner | None = None
         self._sink_id: int | None = None
         self._actions = actions
+        self._backtest_runner = backtest_runner
         self._auth_user = auth_user
         self._auth_password = auth_password
         self._tokens: dict[str, float] = {}  # token -> expiry (unix ts)
@@ -402,6 +538,8 @@ class DashboardServer:
         app.router.add_get("/api/snapshot", self._snapshot)
         app.router.add_get("/api/stream", self._stream)
         app.router.add_post("/api/action", self._action)
+        app.router.add_post("/api/backtest", self._backtest)
+        app.router.add_get("/api/backtest/sample", self._backtest_sample)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._host, self._port)
@@ -557,6 +695,52 @@ class DashboardServer:
         result = await self._actions(payload)
         return web.json_response(
             result, dumps=lambda data: json.dumps(data, ensure_ascii=False)
+        )
+
+    async def _backtest(self, request: web.Request) -> web.Response:
+        """``POST /api/backtest``: запуск бэктеста (sample/csv/mint).
+
+        Args:
+            request: HTTP-запрос с JSON-параметрами режима.
+
+        Returns:
+            JSON с отчётом/CSV или 401/503.
+        """
+        if not self._authorized(request):
+            return self._unauthorized()
+        if self._backtest_runner is None:
+            return web.json_response(
+                {"ok": False, "error": "бэктест недоступен"}, status=503
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "битый JSON"})
+        if not isinstance(payload, dict):
+            return web.json_response({"ok": False, "error": "битый JSON"})
+        result = await self._backtest_runner(payload)
+        return web.json_response(
+            result, dumps=lambda data: json.dumps(data, ensure_ascii=False)
+        )
+
+    async def _backtest_sample(self, request: web.Request) -> web.Response:
+        """``GET /api/backtest/sample``: демо-CSV для формы бэктеста.
+
+        Args:
+            request: HTTP-запрос.
+
+        Returns:
+            CSV-текст или 401/503.
+        """
+        if not self._authorized(request):
+            return self._unauthorized()
+        if self._backtest_runner is None:
+            return web.json_response(
+                {"ok": False, "error": "бэктест недоступен"}, status=503
+            )
+        result = await self._backtest_runner({"mode": "sample"})
+        return web.Response(
+            text=str(result.get("csv", "")), content_type="text/csv"
         )
 
     async def _stream(self, request: web.Request) -> web.StreamResponse:

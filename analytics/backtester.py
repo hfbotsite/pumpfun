@@ -139,6 +139,49 @@ class BacktestReport:
             closed_trades=closed_trades,
         )
 
+    def to_dict(self) -> dict[str, object]:
+        """JSON-совместимое представление отчёта (для веб-дашборда).
+
+        Returns:
+            Словарь со всеми метриками и деталями закрытых сделок.
+        """
+        return {
+            "pool_address": self.pool_address,
+            "base_mint": self.base_mint,
+            "events": self.events,
+            "duration_seconds": self.duration_seconds,
+            "trades": self.trades,
+            "wins": self.wins,
+            "losses": self.losses,
+            "invested_sol": self.invested_sol,
+            "returned_sol": self.returned_sol,
+            "pnl_sol": self.pnl_sol,
+            "pnl_pct": self.pnl_pct,
+            "win_rate_pct": self.win_rate_pct,
+            "avg_hold_seconds": self.avg_hold_seconds,
+            "max_drawdown_sol": self.max_drawdown_sol,
+            "max_drawdown_pct": self.max_drawdown_pct,
+            "best_trade_pct": self.best_trade_pct,
+            "worst_trade_pct": self.worst_trade_pct,
+            "exit_reasons": dict(self.exit_reasons),
+            "closed_trades": [
+                {
+                    "base_mint": trade.base_mint,
+                    "exit_reason": trade.exit_reason,
+                    "pnl_sol": trade.pnl_sol,
+                    "pnl_pct": trade.pnl_pct,
+                    "hold_seconds": trade.hold_seconds,
+                    "entry_price": trade.entry_price,
+                    "exit_price": trade.exit_price,
+                    "invested_sol": trade.invested_sol,
+                    "returned_sol": trade.returned_sol,
+                    "opened_at": trade.opened_at,
+                    "closed_at": trade.closed_at,
+                }
+                for trade in self.closed_trades
+            ],
+        }
+
     def format(self) -> str:
         """Человекочитаемый отчёт для консоли.
 
