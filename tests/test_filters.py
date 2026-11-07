@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from filters.base_filter import FilterChain, FilterContext
-from filters.liquidity_guard import LiquidityGuard
+from filters.liquidity_guard import LiquidityGuard, pool_fee_bps, real_pool_sol
 from filters.security_guard import SecurityGuard
 from models.trade_data import MomentumMetrics, TokenSecurity
 from strategies.momentum_pump import MomentumPumpStrategy
@@ -45,35 +45,78 @@ class TestLiquidityGuard:
     """Проверки ликвидности пула и price impact."""
 
     def test_good_pool_passes(self) -> None:
-        """Пул 40 SOL и ордер 0.5 SOL проходят с чистой котировкой."""
+        """Пул с реальными резервами 60 SOL и ордер 0.5 SOL проходят."""
         guard = LiquidityGuard()
         result = guard.evaluate(make_context())
         assert result.passed
 
     def test_insufficient_liquidity_rejected(self) -> None:
-        """Пул ниже MIN_POOL_SOL отклоняется с причиной."""
-        poor_pool = make_pool(quote_reserve=10_000_000_000)
+        """Кривая с реальными резервами ниже порога отклоняется."""
+        # Виртуальные 35 SOL = реальные 5 SOL < 50.
+        poor_pool = make_pool(quote_reserve=35_000_000_000)
         guard = LiquidityGuard()
         result = guard.evaluate(make_context(pool=poor_pool))
         assert not result.passed
         assert "ликвидн" in result.reason.lower()
+        assert "реальные" in result.reason.lower()
+
+    def test_virtual_pool_sol_alone_does_not_pass(self) -> None:
+        """Виртуальная база 30 SOL не считается ликвидностью (real = 0)."""
+        fresh_pool = make_pool(quote_reserve=30_000_000_000)  # только что создан
+        guard = LiquidityGuard()
+        result = guard.evaluate(make_context(pool=fresh_pool))
+        assert not result.passed
+
+    def test_amm_pool_uses_full_reserve_threshold(self) -> None:
+        """AMM-пул (lp_mint задан) проверяется по полному резерву."""
+        # AMM-стадия: lp_mint не None, порог min_pool_sol=30 по pool_sol.
+        amm_pool = make_pool(lp_mint="LPMint111111111111111111111111111111111")
+        guard = LiquidityGuard(min_pool_sol=50.0)
+        result = guard.evaluate(make_context(pool=amm_pool))
+        assert result.passed  # 90 >= 50
+
+        tight = make_pool(quote_reserve=40_000_000_000, lp_mint="LPMint1")
+        result = guard.evaluate(make_context(pool=tight))
+        assert not result.passed
+        assert "пула" in result.reason.lower()
 
     def test_price_impact_rejected(self) -> None:
         """Ордер с impact выше порога отклоняется (ликвидность достаточна)."""
-        # 4 SOL против 40 SOL: impact ~9.1% > 5%, ликвидность 40 >= 30.
+        # 8 SOL против 90 виртуальных: impact ~8.2% > 5%, real 60 >= 50.
         guard = LiquidityGuard()
-        result = guard.evaluate(make_context(trade_amount_sol=4.0))
+        result = guard.evaluate(make_context(trade_amount_sol=8.0))
         assert not result.passed
         assert "impact" in result.reason.lower()
 
     def test_min_tokens_out_discounted(self) -> None:
-        """min_tokens_out равен котировке с дисконтом 20%."""
-        guard = LiquidityGuard()
+        """min_tokens_out равен котировке с явным дисконтом 20%."""
+        guard = LiquidityGuard(buy_slippage_pct=20.0)
         context = make_context()
         check = guard.check_pool_liquidity(context)
         expected = int(check.quote.amount_out * 0.8)
         assert check.min_tokens_out <= expected + 1
         assert check.min_tokens_out >= expected - 1
+
+
+class TestFeeModel:
+    """Комиссии по стадии жизни токена (bonding curve vs PumpSwap AMM)."""
+
+    def test_curve_fee_is_100_bps(self) -> None:
+        """Bonding curve — 1%."""
+        pool = make_pool()
+        assert pool_fee_bps(pool) == 100
+
+    def test_pumpswap_amm_fee_is_125_bps(self) -> None:
+        """PumpSwap AMM — 125 bps (консервативно к Dynamic Fees V1)."""
+        amm_pool = make_pool(lp_mint="LPMint111111111111111111111111111111111")
+        assert pool_fee_bps(amm_pool) == 125
+
+    def test_real_pool_sol_subtracts_virtual_base(self) -> None:
+        """real_pool_sol = виртуальные − 30 для кривой, полный резерв для AMM."""
+        curve = make_pool(quote_reserve=90_000_000_000)
+        assert real_pool_sol(curve) == 60.0
+        amm = make_pool(quote_reserve=40_000_000_000, lp_mint="LPMint1")
+        assert real_pool_sol(amm) == 40.0
 
 
 class TestSecurityGuard:

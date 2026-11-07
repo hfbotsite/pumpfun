@@ -68,13 +68,20 @@ class Settings(BaseSettings):
         default=0.5, gt=0, description="Размер входного ордера в SOL."
     )
     buy_slippage_pct: float = Field(
-        default=20.0, ge=0, lt=100, description="Проскальзывание на вход, %."
+        default=15.0, ge=0, lt=100, description="Проскальзывание на вход, %."
     )
     sell_slippage_pct: float = Field(
         default=25.0, ge=0, lt=100, description="Проскальзывание на выход, %."
     )
     min_pool_sol: float = Field(
-        default=30.0, ge=0, description="Минимальная ликвидность пула, SOL."
+        default=30.0, ge=0, description="Минимальная ликвидность AMM-пула, SOL."
+    )
+    min_real_pool_sol: float = Field(
+        default=50.0, ge=0,
+        description=(
+            "Минимальные РЕАЛЬНЫЕ резервы bonding curve, SOL "
+            "(виртуальный резерв = реальные + 30 SOL, порог по виртуальным фиктивен)."
+        ),
     )
     max_price_impact_pct: float = Field(
         default=5.0, gt=0, lt=100, description="Предельный Price Impact ордера, %."
@@ -130,7 +137,12 @@ class Settings(BaseSettings):
         default=200_000, gt=0, description="Лимит Compute Unit на транзакцию."
     )
     priority_fee_micro_lamports: int = Field(
-        default=100_000, ge=0, description="Priority fee, micro-lamports per CU."
+        default=1_000_000, ge=0,
+        description=(
+            "Priority fee, micro-lamports per CU "
+            "(1,000,000 при CU 200,000 ≈ 0.0002 SOL на транзакцию; "
+            "практика GMGN/снайперов: 0.0001–0.005 SOL суммарно)."
+        ),
     )
 
     # ------------------------------------------------------------------ DEX

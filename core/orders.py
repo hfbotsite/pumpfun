@@ -119,7 +119,7 @@ def quote_entry(
         sol_in=sol_in,
         sol_reserve=pool.quote_reserve,
         token_reserve=pool.base_reserve,
-        fee_bps=pool_fee_bps(pool.dex),
+        fee_bps=pool_fee_bps(pool),
         slippage_pct=slippage,
     )
 
@@ -162,7 +162,7 @@ def quote_exit(
         tokens_in=tokens_in,
         sol_reserve=pool.quote_reserve,
         token_reserve=pool.base_reserve,
-        fee_bps=pool_fee_bps(pool.dex),
+        fee_bps=pool_fee_bps(pool),
         slippage_pct=slippage,
     )
 

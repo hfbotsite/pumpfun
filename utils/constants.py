@@ -124,3 +124,13 @@ PUMP_FUN_FEE_BPS: int = 100
 
 #: Базисная точка (1 bps = 0.01%).
 BPS_DENOMINATOR: int = 10_000
+
+#: Комиссия PumpSwap AMM (после миграции), bps.
+#: Dynamic Fees V1 на PumpSwap — ступенчатая шкала по market cap
+#: (свежеградуированные ~1.25%, крупные ~0.25%); 125 bps — консервативная
+#: оценка для свежих токенов.
+PUMP_AMM_FEE_BPS: int = 125
+
+#: Виртуальная база SOL в bonding curve Pump.fun: виртуальный резерв =
+#: реальные резервы + 30 SOL (реальные начинаются с нуля).
+PUMP_FUN_VIRTUAL_SOL_BASE: float = 30.0

@@ -213,11 +213,14 @@ class TestDefaults:
     """Новые дефолты конфигурации (без влияния .env)."""
 
     def test_risk_defaults(self) -> None:
-        """Стоп 30%, холд 180 c, канал rpc."""
+        """Стоп 30%, холд 180 c, канал rpc, приоритетка по практике рынка."""
         assert Settings.model_fields["hard_stop_loss_pct"].default == 30.0
         assert Settings.model_fields["max_hold_seconds"].default == 180.0
         assert Settings.model_fields["execution_venue"].default == "rpc"
         assert Settings.model_fields["use_jupiter_fallback"].default is False
+        assert Settings.model_fields["priority_fee_micro_lamports"].default == 1_000_000
+        assert Settings.model_fields["buy_slippage_pct"].default == 15.0
+        assert Settings.model_fields["min_real_pool_sol"].default == 50.0
 
     def test_operations_defaults(self) -> None:
         """Поведенческие значения выведены в конфиг (не захардкожены)."""

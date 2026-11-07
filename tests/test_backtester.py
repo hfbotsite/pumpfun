@@ -57,18 +57,19 @@ def build_pump_events() -> list[TradeEvent]:
     """
     events: list[TradeEvent] = []
     # Разгон: 4 покупки по 0.6 SOL (velocity 2.4 SOL/5c → вход на 3-й).
+    # Количество токенов согласовано с пулом 90 SOL/600M (цена ~1.5e-7).
     for index, timestamp in enumerate((1.0, 1.2, 1.4, 1.6)):
         events.append(
-            _event(TradeSide.BUY, 0.6, 11_600_000, timestamp, f"seed-{index}")
+            _event(TradeSide.BUY, 0.6, 4_000_000, timestamp, f"seed-{index}")
         )
-    # Крупные покупки: цена события (sol/token) растёт ~+37% / +16% / +18%
-    # относительно предыдущей, чтобы достичь TP1 (+30%) и TP2 (+50%).
-    push_tokens = (38_000_000, 33_000_000, 28_000_000)
+    # Крупные покупки: цена события (sol/token) растёт ступенями, чтобы
+    # достичь TP1 (+30%) и TP2 (+50%) на пуле с виртуальным резервом 90 SOL.
+    push_tokens = (36_000_000, 30_000_000, 25_000_000)
     for index, (timestamp, tokens) in enumerate(
         zip((1.8, 2.0, 2.2), push_tokens, strict=True)
     ):
         events.append(
-            _event(TradeSide.BUY, 3.0, tokens, timestamp, f"push-{index}")
+            _event(TradeSide.BUY, 8.0, tokens, timestamp, f"push-{index}")
         )
     return events
 
@@ -107,7 +108,7 @@ class TestBacktestRun:
         write_events_csv(path, build_pump_events())
         scenario = scenario_from_csv(
             path,
-            initial_sol_reserve=30.0,
+            initial_sol_reserve=90.0,
             initial_token_reserve=600_000_000.0,
             security=TokenSecurity(mint_authority=None, freeze_authority=None, lp_burned_pct=100.0),
         )
@@ -138,7 +139,7 @@ class TestBacktestRun:
         write_events_csv(path, events)
         scenario = scenario_from_csv(
             path,
-            initial_sol_reserve=30.0,
+            initial_sol_reserve=90.0,
             initial_token_reserve=600_000_000.0,
             security=TokenSecurity(mint_authority=None, freeze_authority=None, lp_burned_pct=100.0),
         )
@@ -154,7 +155,7 @@ class TestBacktestRun:
         write_events_csv(path, build_pump_events())
         scenario = scenario_from_csv(
             path,
-            initial_sol_reserve=30.0,
+            initial_sol_reserve=90.0,
             initial_token_reserve=600_000_000.0,
             security=TokenSecurity(mint_authority=None, freeze_authority=None, lp_burned_pct=100.0),
         )
