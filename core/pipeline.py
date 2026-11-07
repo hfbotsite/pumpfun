@@ -35,7 +35,7 @@ from dataclasses import dataclass
 
 from analytics.indicators import StreamingIndicators
 from config.settings import settings
-from core.client import SolanaRpcClient, SolanaWsClient
+from core.client import RpcError, SolanaRpcClient, SolanaWsClient
 from core.dashboard import DashboardServer
 from core.dry_run import DryRunExecutor
 from core.executor import OrderExecutor
@@ -345,8 +345,15 @@ class LivePipeline:
                 )
                 self._dashboard = None
 
-        await self._listener.start()
-        await self._register_watchlist()
+        try:
+            await self._listener.start()
+            await self._register_watchlist()
+        except RpcError as exc:
+            logger.critical(
+                "Слушатель не смог стартовать ({}): бот продолжит без событий, "
+                "переподключение в фоне",
+                exc,
+            )
 
         self.stats = PipelineStats(started_at=time.time())
         self._last_maintenance = time.monotonic()

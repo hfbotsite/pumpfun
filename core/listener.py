@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -177,8 +178,10 @@ class PoolStreamListener:
 
         self.trades: asyncio.Queue[TradeEvent] = asyncio.Queue(maxsize=queue_size)
         self.stats = ListenerStats()
-        self._subscription_tokens: dict[str, list[int]] = {}
         self._log_subscriptions: list[int] = []
+        self._subscribed_programs: set[str] = set()
+        self._retry_task: asyncio.Task[None] | None = None
+        self._subscription_tokens: dict[str, list[int]] = {}
 
     # ------------------------------------------------------------------ Свойства
     @property
@@ -190,17 +193,35 @@ class PoolStreamListener:
     async def start(self) -> None:
         """Запускает подписки на логи программ.
 
-        Raises:
-            RpcError: Если WS-соединение не удалось установить.
+        Если Helius WS недоступен при старте — бот **не падает**: слушатель
+        уходит в фоновый ретрай и подпишется, как только сеть появится
+        (дашборд всё это время показывает состояние).
         """
         await self._ws.start()
-        if not await self._ws.wait_connected(timeout=20.0):
-            raise RpcError("WS: не удалось установить соединение для слушателя")
+        if await self._ws.wait_connected(timeout=20.0):
+            await self._subscribe_program_logs()
+            return
+        logger.critical(
+            "WS Helius недоступен при старте — продолжаю работу с фоновым "
+            "переподключением; события пойдут после восстановления сети "
+            "(дашборд показывает состояние)"
+        )
+        self._retry_task = asyncio.create_task(self._retry_subscribe())
+
+    async def _subscribe_program_logs(self) -> None:
+        """Подписывает лог-программы; требует живого WS-соединения.
+
+        Raises:
+            RpcError: Если подписка не удалась (ретрай снаружи).
+        """
         for program_id in (PUMP_FUN_PROGRAM_ID, PUMP_FUN_AMM_PROGRAM_ID):
+            if program_id in self._subscribed_programs:
+                continue
             token = await self._ws.subscribe_logs(
                 program_id, self._handle_logs_notification, commitment=self._commitment
             )
             self._log_subscriptions.append(token)
+            self._subscribed_programs.add(program_id)
         logger.info(
             "Слушатель запущен: программы {}, {} (включённые DEX: {})",
             PUMP_FUN_PROGRAM_ID,
@@ -208,8 +229,24 @@ class PoolStreamListener:
             settings.enabled_dex,
         )
 
+    async def _retry_subscribe(self) -> None:
+        """Фоновый цикл: подпишется, как только WS-соединение вернётся."""
+        while True:
+            try:
+                if self._ws.is_connected:
+                    await self._subscribe_program_logs()
+                    return
+            except RpcError as exc:
+                logger.debug("Ретрай подписки слушателя не удался: {}", exc)
+            await asyncio.sleep(5.0)
+
     async def stop(self) -> None:
         """Останавливает слушатель и снимает все подписки."""
+        if self._retry_task is not None and not self._retry_task.done():
+            self._retry_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._retry_task
+        self._retry_task = None
         for token in self._log_subscriptions:
             await self._ws.unsubscribe(token)
         self._log_subscriptions.clear()
