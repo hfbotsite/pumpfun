@@ -364,6 +364,26 @@ python main.py --no-dashboard     # не поднимать веб-дашбор�
 python main.py --status           # показать открытые позиции/сводку из БД и выйти
 ```
 
+### Развёртывание на VPS (deploy.sh)
+
+```bash
+# с локальной машины (секреты и данные НЕ переносим):
+rsync -av --exclude .venv --exclude data --exclude logs --exclude .env ./ user@vps:/opt/pumpbot/
+ssh user@vps
+cd /opt/pumpbot && ./deploy.sh          # PORT=8788 ./deploy.sh — сменить порт
+```
+
+Скрипт идемпотентен, полный лог пишет в `deploy_<дата>.log` и на каждом
+сбое печатает `ПОДСКАЗКА` с конкретным лечением (python < 3.11, venv,
+PyPI/build-essential, занятый порт, git-конфликты, отсутствие curl/sudo).
+Шаги: окружение → git pull → проверка `.env` (нормализует CRLF, подсказывает
+по пустому `HELIUS_API_KEY` и отсутствию кошелька) → `.venv` + зависимости +
+compileall → systemd-юнит `pumpbot.service` (Restart=always, автостарт;
+первый запуск безопаснее в dry-run: `sudo systemctl edit pumpbot` →
+`[Service] Environment=BOT_ARGS=--dry-run`) → health-check
+`/api/snapshot` до 40 c. Итог — команды наблюдения (journalctl, ssh-туннель
+дашборда). Флаги: `--skip-service`, `--no-health`.
+
 ### Веб-дашборд
 
 Пока бот работает, откройте `http://127.0.0.1:8787`. Одна страница:
