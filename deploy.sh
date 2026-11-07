@@ -21,6 +21,9 @@
 #
 #  Флаги:  --skip-service   только окружение/код, systemd не трогать
 #          --no-health      не ждать health-check
+#          --auto-stash     при конфликте pull: git stash → pull → pop
+#          --user NAME      сервисный пользователь для systemd-юнита
+#          ALLOW_ROOT=1     осознанный запуск от root (не рекомендуется)
 #          PORT=8787        порт дашборда для health-check (env)
 #          SERVICE_NAME=pumpbot   имя systemd-юнита (env)
 #
@@ -38,6 +41,7 @@ DASHBOARD_PORT="${DASHBOARD_PORT:-8787}"
 RUN_USER="${SUDO_USER:-$(id -un)}"
 SKIP_SERVICE=0
 NO_HEALTH=0
+AUTO_STASH=0
 STEPS_TOTAL=7
 STEP=0
 
@@ -63,16 +67,32 @@ trap on_error ERR
 SUDO=""
 
 # ------------------------------------------------------------------ флаги
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --skip-service) SKIP_SERVICE=1 ;;
         --no-health)    NO_HEALTH=1 ;;
+        --auto-stash)   AUTO_STASH=1 ;;
+        --user)
+            shift
+            if [ $# -eq 0 ]; then fail "--user требует имя пользователя"; exit 1; fi
+            RUN_USER="$1" ;;
+        --user=*) RUN_USER="${1#--user=}" ;;
         -h|--help)
             grep '^#  ' "$0" | sed 's/^#  \?//'
             exit 0 ;;
-        *) warn "неизвестный аргумент $arg — игнорирую" ;;
+        *) warn "неизвестный аргумент $1 — игнорирую" ;;
     esac
+    shift
 done
+
+# Бот работает с приватными ключами: сервис под root — критичный риск
+# (уязвимость в зависимостях = полный контроль над VPS).
+if [ "$(id -u)" -eq 0 ] && [ -z "${ALLOW_ROOT:-}" ]; then
+    fail "деплой от root запрещён: сервис получил бы User=root вместе с ключами кошелька"
+    hint "создайте сервисного пользователя: adduser --disabled-password pumpbot && chown -R pumpbot $PROJECT_DIR"
+    hint "и запустите от него; осознанный обход: ALLOW_ROOT=1 ./deploy.sh (не рекомендуется)"
+    exit 1
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
     if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else
@@ -126,9 +146,26 @@ step "2/7 Код: обновление из git (если это репозит�
 if [ -d .git ]; then
     if git pull --ff-only 2>>"$LOG_FILE"; then
         ok "git pull --ff-only: код актуален ($(git rev-parse --short HEAD 2>/dev/null || echo '?'))"
+    elif [ "$AUTO_STASH" -eq 1 ]; then
+        warn "локальные правки мешают pull — пробую git stash (флаг --auto-stash)"
+        if git stash push -m "deploy auto-stash $(date '+%F %T')" >>"$LOG_FILE" 2>&1 \
+            && git pull --ff-only >>"$LOG_FILE" 2>&1; then
+            ok "pull выполнен после stash"
+            if git stash pop >>"$LOG_FILE" 2>&1; then
+                ok "локальные правки возвращены из stash"
+            else
+                warn "git stash pop конфликтует — правки лежат в stash"
+                hint "разрешите вручную: git stash show -p; git stash drop — после разбора"
+            fi
+        else
+            fail "stash/pull не удался — состояние откатывать не буду"
+            hint "разберитесь вручную: git stash list; затем повторите ./deploy.sh"
+            exit 1
+        fi
     else
-        fail "git pull не удался"
-        hint "локальные правки конфликтуют: git stash && ./deploy.sh, или git reset --hard origin/HEAD (ОСТОРОЖНО: потеря правок)"
+        fail "git pull не удался (локальные правки конфликтуют)"
+        hint "вариант без потери правок: ./deploy.sh --auto-stash (stash → pull → pop)"
+        hint "вручную: git stash && ./deploy.sh, или git reset --hard origin/HEAD (ОСТОРОЖНО: потеря правок)"
         exit 1
     fi
 else
@@ -139,12 +176,18 @@ fi
 # ============================================================================
 step "3/7 Конфигурация: .env и ключи"
 # Код мог быть перенесён с Windows: CRLF ломает grep-проверки ниже.
+# Нормализуем и существующий .env, и шаблон: git с autocrlf=true отдаёт
+# .env.example с CRLF, и cp переносит их в свежесозданный .env.
 if grep -q $'\r' .env 2>/dev/null; then
     sed -i 's/\r$//' .env
     ok ".env приведён к LF (был CRLF)"
 fi
 if [ ! -f .env ]; then
-    cp .env.example .env
+    if [ -f .env.example ] && grep -q $'\r' .env.example 2>/dev/null; then
+        sed -i 's/\r$//' .env.example
+        ok ".env.example приведён к LF (был CRLF)"
+    fi
+    cp .env.example .env 2>/dev/null || { fail "нет ни .env, ни .env.example"; hint "восстановите файлы из репозитория или перенесите rsync-ом"; exit 1; }
     warn ".env отсутствовал — создан из .env.example с дефолтами"
     hint "ЗАПОЛНИТЕ секреты до реальной торговли: nano .env → HELIUS_API_KEY, WALLET_PRIVATE_KEY (или WALLET_KEYPAIR_PATH)"
     hint "для первого запуска можно оставить как есть: режим dry-run включается флагом --dry-run в юните"
@@ -191,8 +234,8 @@ else
     exit 1
 fi
 
-if "$VPY" -m compileall -q config core filters strategies analytics models utils main.py; then
-    ok "синтаксис всех модулей валиден (compileall)"
+if "$VPY" -m compileall -q -x '(^|/)(\.venv|\.git)(/|$)' .; then
+    ok "синтаксис всех .py проекта валиден (compileall)"
 else
     fail "compileall нашёл битые файлы"
     hint "похоже, код повредился при переносе: повторите rsync/scp и сравните checksums"
@@ -229,6 +272,11 @@ else
         ok "бот запущен фоном, PID $(cat bot.pid); лог: logs/bot_nohup.out"
     else
         UNIT="/etc/systemd/system/$SERVICE_NAME.service"
+        DIR_OWNER="$(stat -c '%U' "$PROJECT_DIR" 2>/dev/null || true)"
+        if [ -n "$DIR_OWNER" ] && [ "$DIR_OWNER" != "$RUN_USER" ]; then
+            warn "каталог принадлежит $DIR_OWNER, а сервис будет работать от $RUN_USER"
+            hint "перед стартом передайте владение: sudo chown -R $RUN_USER $PROJECT_DIR"
+        fi
         cat <<EOF | $SUDO tee "$UNIT" >/dev/null
 [Unit]
 Description=Solana Pump Momentum Scalping Bot
