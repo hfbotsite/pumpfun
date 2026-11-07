@@ -1,0 +1,410 @@
+"""Моментум-скальпинг стратегия входа/выхода (1–3 секунды удержания).
+
+Стратегия объединяет три уровня принятия решения:
+
+**Вход** выполняется только при последовательном прохождении:
+
+1. :class:`~filters.liquidity_guard.LiquidityGuard` — ликвидность пула и
+   допустимый price impact ордера;
+2. :class:`~filters.security_guard.SecurityGuard` — отсутствие mint/freeze
+   authority и достаточная доля сожжённого LP;
+3. **Momentum Trigger** — :attr:`buy_sell_ratio` не ниже порога и
+   :attr:`volume_velocity` не ниже порога в окне входа.
+
+**Выход** срабатывает по первому из параллельных триггеров:
+
+* **Hard Stop-Loss** — падение цены на ``hard_stop_loss_pct`` от входа;
+* **Каскадный Take-Profit** — фиксация ``tp1_size_pct`` позиции при
+  ``tp1_pct`` и остатка при ``tp2_pct``;
+* **Trailing Stop** — откат от зарегистрированного пика на
+  ``trailing_stop_pct`` (активируется после выхода цены выше входа);
+* **Volume Exhaustion** — крупная продажа (``large_sell_sol``) или падение
+  Buy/Sell Ratio ниже ``exit_ratio_threshold`` в окне выхода;
+* **Max Hold Timeout** — принудительный выход по истечении
+  ``max_hold_seconds``.
+
+Стратегия не выполняет сетевых вызовов и не отправляет транзакции — она лишь
+порождает :class:`~models.trade_data.TradeSignal`, который исполняет
+:mod:`core.executor`.
+
+Контракт по метрикам:
+    :attr:`~filters.base_filter.FilterContext.metrics` должен содержать метрики
+    в окне, соответствующем принимаемому решению: ``entry_window_seconds`` —
+    при :meth:`evaluate_entry`, ``exit_window_seconds`` — при
+    :meth:`evaluate_exit`. Формирование метрик — ответственность вызывающего
+    слоя (``core.listener``/``main.py``) и бэктестера.
+"""
+
+from __future__ import annotations
+
+from config.settings import settings
+from filters.base_filter import FilterChain, FilterContext
+from filters.liquidity_guard import LiquidityGuard
+from filters.security_guard import SecurityGuard
+from models.trade_data import (
+    ExitReason,
+    Position,
+    TradeSignal,
+)
+from strategies.base_strategy import BaseStrategy
+
+
+class MomentumPumpStrategy(BaseStrategy):
+    """Стратегия моментум-скальпинга на импульсе покупок.
+
+    Инкапсулирует пороги входа (Buy/Sell Ratio, Volume Velocity),
+    каскадный тейк-профит, трейлинг-стоп, жёсткий стоп-лосс и детектор
+    затухания импульса.
+    """
+
+    name = "momentum_pump"
+
+    def __init__(
+        self,
+        *,
+        entry_filters: FilterChain | None = None,
+        buy_sell_ratio_threshold: float | None = None,
+        volume_velocity_threshold: float | None = None,
+        tp1_pct: float | None = None,
+        tp2_pct: float | None = None,
+        tp1_size_pct: float | None = None,
+        trailing_stop_pct: float | None = None,
+        hard_stop_loss_pct: float | None = None,
+        exit_ratio_threshold: float | None = None,
+        large_sell_sol: float | None = None,
+        max_hold_seconds: float | None = None,
+    ) -> None:
+        """Инициализирует стратегию.
+
+        Args:
+            entry_filters: Цепочка предторговых фильтров; по умолчанию
+                ``LiquidityGuard`` + ``SecurityGuard``.
+            buy_sell_ratio_threshold: Минимальная доля покупок для входа (0..1).
+            volume_velocity_threshold: Минимальный объём покупок в окне, SOL.
+            tp1_pct: Первый тейк-профит, %.
+            tp2_pct: Второй тейк-профит, %.
+            tp1_size_pct: Доля позиции, фиксируемая на TP1, %.
+            trailing_stop_pct: Откат от пика для трейлинг-стопа, %.
+            hard_stop_loss_pct: Жёсткий стоп-лосс, %.
+            exit_ratio_threshold: Порог падения Buy/Sell Ratio для выхода (0..1).
+            large_sell_sol: Порог «крупной продажи», SOL.
+            max_hold_seconds: Максимальное время удержания позиции, c.
+        """
+        self._entry_filters = entry_filters if entry_filters is not None else FilterChain(
+            [LiquidityGuard(), SecurityGuard()]
+        )
+        self._buy_sell_ratio_threshold = (
+            settings.buy_sell_ratio_threshold
+            if buy_sell_ratio_threshold is None
+            else buy_sell_ratio_threshold
+        )
+        self._volume_velocity_threshold = (
+            settings.volume_velocity_threshold
+            if volume_velocity_threshold is None
+            else volume_velocity_threshold
+        )
+        self._tp1_pct = settings.tp1_pct if tp1_pct is None else tp1_pct
+        self._tp2_pct = settings.tp2_pct if tp2_pct is None else tp2_pct
+        self._tp1_size_pct = (
+            settings.tp1_size_pct if tp1_size_pct is None else tp1_size_pct
+        )
+        self._trailing_stop_pct = (
+            settings.trailing_stop_pct
+            if trailing_stop_pct is None
+            else trailing_stop_pct
+        )
+        self._hard_stop_loss_pct = (
+            settings.hard_stop_loss_pct
+            if hard_stop_loss_pct is None
+            else hard_stop_loss_pct
+        )
+        self._exit_ratio_threshold = (
+            settings.exit_ratio_threshold
+            if exit_ratio_threshold is None
+            else exit_ratio_threshold
+        )
+        self._large_sell_sol = (
+            settings.large_sell_sol if large_sell_sol is None else large_sell_sol
+        )
+        self._max_hold_seconds = (
+            settings.max_hold_seconds if max_hold_seconds is None else max_hold_seconds
+        )
+        self._tp1_size_fraction = max(0.0, min(1.0, self._tp1_size_pct / 100.0)) or 1.0
+
+    # ------------------------------------------------------------- Свойства
+    @property
+    def entry_filters(self) -> FilterChain:
+        """Цепочка фильтров допуска входа."""
+        return self._entry_filters
+
+    @property
+    def buy_sell_ratio_threshold(self) -> float:
+        """Порог Buy/Sell Ratio для входа."""
+        return self._buy_sell_ratio_threshold
+
+    @property
+    def volume_velocity_threshold(self) -> float:
+        """Порог объёма покупок для входа, SOL."""
+        return self._volume_velocity_threshold
+
+    # ------------------------------------------------------------- Вход
+    def evaluate_entry(self, context: FilterContext) -> TradeSignal:
+        """Принимает решение о входе по импульсу покупок.
+
+        Порядок проверок: цепочка фильтров → Buy/Sell Ratio → Volume Velocity.
+
+        Args:
+            context: Контекст с пулом, метриками (окно входа) и безопасностью.
+
+        Returns:
+            Сигнал ``ENTER`` при выполнении всех условий, иначе ``HOLD``.
+        """
+        metrics = context.metrics
+        if metrics is None:
+            return self._hold_signal(context, "отсутствуют метрики импульса")
+
+        for result in self._entry_filters.run(context):
+            if not result.passed:
+                return self._hold_signal(
+                    context, f"{result.filter_name}: {result.reason}"
+                )
+
+        ratio = metrics.buy_sell_ratio
+        if ratio < self._buy_sell_ratio_threshold:
+            return self._hold_signal(
+                context,
+                "низкий Buy/Sell Ratio "
+                f"{ratio:.3f} < {self._buy_sell_ratio_threshold:.2f}",
+            )
+
+        velocity = metrics.volume_velocity_sol
+        if velocity < self._volume_velocity_threshold:
+            return self._hold_signal(
+                context,
+                "низкая Volume Velocity "
+                f"{velocity:.3f} < {self._volume_velocity_threshold:.2f} SOL",
+            )
+
+        return self._enter_signal(
+            context,
+            "импульс покупок: "
+            f"ratio={ratio:.3f}, velocity={velocity:.3f} SOL/{metrics.window_seconds:.1f}s",
+        )
+
+    # ------------------------------------------------------------- Выход
+    def evaluate_exit(
+        self, position: Position, context: FilterContext
+    ) -> TradeSignal | None:
+        """Принимает решение о выходе из открытой позиции.
+
+        Триггеры проверяются в порядке приоритета: жёсткий стоп-лосс →
+        каскадный тейк-профит → трейлинг-стоп → затухание импульса →
+        таймаут удержания.
+
+        Args:
+            position: Текущая открытая позиция.
+            context: Свежий контекст актива (цена, метрики окна выхода).
+
+        Returns:
+            Сигнал ``EXIT`` с причиной либо ``None``, если позицию удерживать.
+        """
+        current_price = self._current_price(position, context)
+
+        hard_stop = self._check_hard_stop(position, current_price, context)
+        if hard_stop is not None:
+            return hard_stop
+
+        take_profit = self._check_take_profit(position, current_price, context)
+        if take_profit is not None:
+            return take_profit
+
+        trailing = self._check_trailing_stop(position, current_price, context)
+        if trailing is not None:
+            return trailing
+
+        exhaustion = self._check_volume_exhaustion(position, context)
+        if exhaustion is not None:
+            return exhaustion
+
+        return self._check_max_hold(position, context)
+
+    # ------------------------------------------------- Реализация триггеров
+    def _check_hard_stop(
+        self, position: Position, current_price: float, context: FilterContext
+    ) -> TradeSignal | None:
+        """Проверяет жёсткий стоп-лосс.
+
+        Args:
+            position: Открытая позиция.
+            current_price: Текущая цена, SOL за токен.
+            context: Контекст актива.
+
+        Returns:
+            Сигнал выхода при пробое стопа, иначе ``None``.
+        """
+        pnl_pct = position.unrealized_pnl_pct(current_price)
+        if pnl_pct <= -self._hard_stop_loss_pct:
+            return self._exit_signal(
+                position,
+                context,
+                ExitReason.HARD_STOP_LOSS,
+                1.0,
+                f"жёсткий стоп-лосс: PnL={pnl_pct:.2f}%",
+            )
+        return None
+
+    def _check_take_profit(
+        self, position: Position, current_price: float, context: FilterContext
+    ) -> TradeSignal | None:
+        """Проверяет каскадный тейк-профит (TP2, затем TP1).
+
+        Args:
+            position: Открытая позиция.
+            current_price: Текущая цена, SOL за токен.
+            context: Контекст актива.
+
+        Returns:
+            Сигнал выхода при достижении цели, иначе ``None``.
+        """
+        pnl_pct = position.unrealized_pnl_pct(current_price)
+
+        if position.tp1_taken:
+            if pnl_pct >= self._tp2_pct:
+                return self._exit_signal(
+                    position,
+                    context,
+                    ExitReason.TAKE_PROFIT_2,
+                    1.0,
+                    f"второй тейк-профит: PnL={pnl_pct:.2f}% >= {self._tp2_pct:.1f}%",
+                )
+            return None
+
+        if pnl_pct >= self._tp1_pct:
+            return self._exit_signal(
+                position,
+                context,
+                ExitReason.TAKE_PROFIT_1,
+                self._tp1_size_fraction,
+                f"первый тейк-профит: PnL={pnl_pct:.2f}% >= {self._tp1_pct:.1f}%",
+            )
+        return None
+
+    def _check_trailing_stop(
+        self, position: Position, current_price: float, context: FilterContext
+    ) -> TradeSignal | None:
+        """Проверяет трейлинг-стоп от зарегистрированного пика.
+
+        Трейлинг активируется только после того, как цена поднималась выше
+        входа (``peak_price > entry_price``), чтобы не дублировать жёсткий
+        стоп-лосс на «плоской» позиции.
+
+        Args:
+            position: Открытая позиция.
+            current_price: Текущая цена, SOL за токен.
+            context: Контекст актива.
+
+        Returns:
+            Сигнал выхода при откате от пика, иначе ``None``.
+        """
+        if position.peak_price <= position.entry_price:
+            return None
+        drawdown = position.drawdown_from_peak_pct(current_price)
+        if drawdown >= self._trailing_stop_pct:
+            return self._exit_signal(
+                position,
+                context,
+                ExitReason.TRAILING_STOP,
+                1.0,
+                f"трейлинг-стоп: откат {drawdown:.2f}% от пика "
+                f"(>= {self._trailing_stop_pct:.1f}%)",
+            )
+        return None
+
+    def _check_volume_exhaustion(
+        self, position: Position, context: FilterContext
+    ) -> TradeSignal | None:
+        """Проверяет затухание импульса и неблагоприятный поток.
+
+        Триггеры: крупная продажа (``large_sell_sol``) либо падение
+        Buy/Sell Ratio ниже ``exit_ratio_threshold`` в окне выхода.
+
+        Args:
+            position: Открытая позиция.
+            context: Контекст актива.
+
+        Returns:
+            Сигнал выхода при затухании импульса, иначе ``None``.
+        """
+        metrics = context.metrics
+        if metrics is None:
+            return None
+
+        if metrics.largest_sell_sol >= self._large_sell_sol:
+            return self._exit_signal(
+                position,
+                context,
+                ExitReason.VOLUME_EXHAUSTION,
+                1.0,
+                "крупная продажа "
+                f"{metrics.largest_sell_sol:.3f} SOL >= {self._large_sell_sol:.2f} SOL",
+            )
+
+        if (
+            metrics.total_count > 0
+            and metrics.buy_sell_ratio < self._exit_ratio_threshold
+        ):
+            return self._exit_signal(
+                position,
+                context,
+                ExitReason.VOLUME_EXHAUSTION,
+                1.0,
+                "падение Buy/Sell Ratio "
+                f"{metrics.buy_sell_ratio:.3f} < {self._exit_ratio_threshold:.2f}",
+            )
+        return None
+
+    def _check_max_hold(
+        self, position: Position, context: FilterContext
+    ) -> TradeSignal | None:
+        """Проверяет принудительный выход по таймауту удержания.
+
+        Args:
+            position: Открытая позиция.
+            context: Контекст актива.
+
+        Returns:
+            Сигнал выхода при истечении времени, иначе ``None``.
+        """
+        held_seconds = context.timestamp - position.opened_at
+        if held_seconds >= self._max_hold_seconds:
+            return self._exit_signal(
+                position,
+                context,
+                ExitReason.MAX_HOLD_TIMEOUT,
+                1.0,
+                f"таймаут удержания: {held_seconds:.2f}c >= {self._max_hold_seconds:.1f}c",
+            )
+        return None
+
+    # ----------------------------------------------------------- Утилиты
+    @staticmethod
+    def _current_price(position: Position, context: FilterContext) -> float:
+        """Определяет актуальную цену токена для оценки позиции.
+
+        Предпочитается последняя цена сделки из метрик окна выхода; при её
+        отсутствии используется спот-цена пула.
+
+        Args:
+            position: Открытая позиция.
+            context: Контекст актива.
+
+        Returns:
+            Текущая цена в SOL за токен (не ниже спот-цены пула при нуле).
+        """
+        metrics = context.metrics
+        price = metrics.last_price if metrics is not None else 0.0
+        if price <= 0:
+            price = context.pool.price_sol_per_token()
+        if price <= 0:
+            price = position.entry_price
+        return price

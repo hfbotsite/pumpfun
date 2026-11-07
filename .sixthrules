@@ -1,0 +1,50 @@
+# Codebase memory (MCP: codebase-memory)
+
+Проект проиндексирован в `codebase-memory`. Индекс (граф символов и связей)
+лежит локально и заменяет чтение сырых файлов. Работай через него, а не через
+`read_file`/`search_files` по всему репозиторию.
+
+**Имя индекса:** `C-Users-andre-Documents-GitHub-pumpfun`
+(оно нормализуется из root_path; если инструмент просит `project` — передавай
+именно эту строку).
+
+## Порядок работы с кодом
+
+1. **Ориентировка.** Начинай с `get_architecture` (`aspects: ["overview"]`)
+   или `get_file_outline` для конкретного файла. Не читай файл целиком, пока
+   не знаешь, что в нём нужно.
+2. **Поиск.** Для «где это определено / кто вызывает» используй
+   `search_graph` (по имени, regex, `qn_pattern`, `file_pattern`) или
+   `semantic_query` для поиска по смыслу. Не запускай
+   `search_files`-обход дерева для этого.
+3. **Связи.** Кто вызывает / что вызывает: `trace_path`
+   (`direction: inbound|outbound`, `depth`), режимы `calls`, `data_flow`,
+   `topology`. Для агрегатов и многошаговых запросов — `query_graph` (Cypher).
+4. **Тело символа.** Читай только нужную функцию:
+   `get_code_snippet` с `start_line`/`max_lines`, либо `source_mode: outline`
+   для больших классов. Полный файл — последний вариант, а не первый.
+5. **Перед правкой.** Смотри, кто зависит от символа: `trace_path`
+   (`direction: inbound`, `depth: 2`, `risk_labels: true`), затем
+   `get_code_snippet` для каждого затронутого. `detect_changes` в этом
+   проекте не работает — каталог не является git-репозиторием.
+6. **Обновление.** Индекс обновляется сам (auto_watch, poll ~5 с). После
+   крупных перемещений файлов — `index_repository`
+   (`repo_path: C:/Users/andre/Documents/GitHub/pumpfun`, `mode: moderate`).
+   Полный (`full`) — редко, он дорогой.
+
+## Экономия контекста
+
+- Не вставляй в ответ целые файлы и длинные листинги: цитируй `qn`, файл и
+  строки, тело — только фрагментом через `get_code_snippet`.
+- Если инструмент вернул `truncated` или подсказку про пагинацию — добирай
+  через `cursor`/`offset`, а не повторяй запрос целиком.
+- Если символ в графе не нашёлся, только тогда падай на `read_file` по
+  конкретному файлу.
+
+## Проект
+
+Python-бот для торговли на pump.fun/Solana. Структура: `core/` (клиент, RPC,
+исполнитель, Jito, Jupiter, листенер, реестр пулов, портфель, безопасность,
+сборка транзакций), `strategies/` (базовая + momentum), `filters/`
+(liquidity/security guard), `analytics/indicators.py`, `models/trade_data.py`,
+`config/settings.py`, `utils/` (amm, spl, constants, latency, logger).

@@ -1,0 +1,270 @@
+"""Конфигурация бота.
+
+Все параметры читаются из переменных окружения и файла ``.env`` с помощью
+``pydantic-settings``. Модуль предоставляет единый кэшированный синглтон
+:data:`settings`, который импортируется остальными слоями приложения.
+
+Пример:
+    >>> from config import settings
+    >>> settings.trade_amount_lamports
+    500000000
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Literal
+
+from pydantic import Field, computed_field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: Количество лампортов в одном SOL.
+LAMPORTS_PER_SOL: int = 1_000_000_000
+
+#: Допустимые сети Solana.
+SolanaNetwork = Literal["mainnet-beta", "devnet", "testnet"]
+
+#: Шаблоны HTTP/WS endpoint-ов Helius по сети.
+_HELIUS_HTTP_TEMPLATE = "https://{net}.helius-rpc.com/?api-key={key}"
+_HELIUS_WS_TEMPLATE = "wss://{net}.helius-rpc.com/?api-key={key}"
+
+
+class Settings(BaseSettings):
+    """Единый объект конфигурации приложения.
+
+    Поля соответствуют переменным из ``.env``. Регистр имён переменных не важен
+    (``HELIUS_API_KEY`` == ``helius_api_key``). Неизвестные переменные игнорируются.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # ------------------------------------------------------------------ Сеть
+    solana_network: SolanaNetwork = Field(
+        default="mainnet-beta", description="Целевая сеть Solana."
+    )
+    helius_api_key: str = Field(default="", description="API-ключ Helius.")
+    rpc_http_url: str = Field(
+        default="", description="Переопределение HTTP RPC (пусто = из Helius)."
+    )
+    rpc_ws_url: str = Field(
+        default="", description="Переопределение WS RPC (пусто = из Helius)."
+    )
+
+    # ---------------------------------------------------------------- Кошелёк
+    wallet_private_key: str = Field(
+        default="", description="Приватный ключ base58 (приоритетнее keypair-файла)."
+    )
+    wallet_keypair_path: str = Field(
+        default="./keys/id.json", description="Путь к JSON keypair."
+    )
+
+    # ------------------------------------------------------- Торговые параметры
+    trade_amount_sol: float = Field(
+        default=0.5, gt=0, description="Размер входного ордера в SOL."
+    )
+    buy_slippage_pct: float = Field(
+        default=20.0, ge=0, lt=100, description="Проскальзывание на вход, %."
+    )
+    sell_slippage_pct: float = Field(
+        default=25.0, ge=0, lt=100, description="Проскальзывание на выход, %."
+    )
+    min_pool_sol: float = Field(
+        default=30.0, ge=0, description="Минимальная ликвидность пула, SOL."
+    )
+    max_price_impact_pct: float = Field(
+        default=5.0, gt=0, lt=100, description="Предельный Price Impact ордера, %."
+    )
+
+    # -------------------------------------------------------------------- Jito
+    jito_tip_sol: float = Field(
+        default=0.005, ge=0, description="Чаевые Jito валидатору, SOL."
+    )
+    jito_block_engine_url: str = Field(
+        default="https://frankfurt.mainnet.block-engine.jito.wtf",
+        description="URL Jito Block Engine (региональный).",
+    )
+    jito_region: str = Field(default="frankfurt", description="Метка региона Jito.")
+
+    # ------------------------------------------------------------ Compute Budget
+    compute_unit_limit: int = Field(
+        default=200_000, gt=0, description="Лимит Compute Unit на транзакцию."
+    )
+    priority_fee_micro_lamports: int = Field(
+        default=100_000, ge=0, description="Priority fee, micro-lamports per CU."
+    )
+
+    # ------------------------------------------------------------------ Вход
+    entry_window_seconds: float = Field(
+        default=5.0, gt=0, description="Окно анализа входных триггеров, c."
+    )
+    buy_sell_ratio_threshold: float = Field(
+        default=0.70,
+        ge=0,
+        le=1,
+        description="Минимальная доля покупок для входа.",
+    )
+    volume_velocity_threshold: float = Field(
+        default=1.5, gt=0, description="Минимальный объём покупок за окно, SOL."
+    )
+
+    # ------------------------------------------------------------------ Выход
+    tp1_pct: float = Field(default=30.0, gt=0, description="Первый тейк-профит, %.")
+    tp2_pct: float = Field(default=50.0, gt=0, description="Второй тейк-профит, %.")
+    tp1_size_pct: float = Field(
+        default=50.0, gt=0, le=100, description="Доля позиции для TP1, %."
+    )
+    trailing_stop_pct: float = Field(
+        default=10.0, gt=0, le=100, description="Откат от пика для трейлинг-стопа, %."
+    )
+    hard_stop_loss_pct: float = Field(
+        default=12.0, gt=0, le=100, description="Жёсткий стоп-лосс, %."
+    )
+    exit_window_seconds: float = Field(
+        default=2.0, gt=0, description="Окно детекта затухания импульса, c."
+    )
+    exit_ratio_threshold: float = Field(
+        default=0.40, ge=0, le=1, description="Порог падения Buy/Sell Ratio."
+    )
+    large_sell_sol: float = Field(
+        default=1.0, gt=0, description="Порог крупной продажи, SOL."
+    )
+    max_hold_seconds: float = Field(
+        default=30.0, gt=0, description="Принудительный выход по таймауту, c."
+    )
+
+    # ---------------------------------------------------------- Безопасность
+    require_mint_authority_null: bool = Field(
+        default=True, description="Требовать mint authority == None."
+    )
+    require_freeze_authority_null: bool = Field(
+        default=True, description="Требовать freeze authority == None."
+    )
+    min_lp_burned_pct: float = Field(
+        default=90.0, ge=0, le=100, description="Минимальная доля сожжённого/залоченного LP, %."
+    )
+
+    # ---------------------------------------------------------------- Jupiter
+    use_jupiter_fallback: bool = Field(
+        default=True, description="Использовать Jupiter как fallback-маршрут."
+    )
+    jupiter_api_url: str = Field(
+        default="https://lite-api.jup.ag/swap/v1",
+        description="Базовый URL Jupiter Swap API v6.",
+    )
+
+    # ------------------------------------------------------------- Логирование
+    log_level: str = Field(default="INFO", description="Уровень логирования.")
+    log_dir: str = Field(default="logs", description="Каталог логов loguru.")
+
+    # ----------------------------------------------------------------- Транспорт
+    rpc_timeout_seconds: float = Field(
+        default=10.0, gt=0, description="Таймаут HTTP RPC-запроса, c."
+    )
+    rpc_max_retries: int = Field(
+        default=3, ge=0, description="Число повторов RPC-запроса."
+    )
+    ws_initial_reconnect_delay: float = Field(
+        default=0.5, gt=0, description="Начальная задержка реконнекта WS, c."
+    )
+    ws_max_reconnect_delay: float = Field(
+        default=30.0, gt=0, description="Максимальная задержка реконнекта WS, c."
+    )
+
+    # -------------------------------------------------------------- Валидаторы
+    @field_validator("solana_network", mode="before")
+    @classmethod
+    def _normalize_network(cls, value: object) -> object:
+        """Приводит алиасы сети к каноничному значению."""
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            aliases = {
+                "mainnet": "mainnet-beta",
+                "mainnet-beta": "mainnet-beta",
+                "devnet": "devnet",
+                "testnet": "testnet",
+            }
+            return aliases.get(normalized, normalized)
+        return value
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _normalize_log_level(cls, value: object) -> object:
+        """Приводит уровень логирования к верхнему регистру."""
+        if isinstance(value, str):
+            return value.strip().upper()
+        return value
+
+    # ------------------------------------------------------------- Вычисляемые
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def http_rpc_url(self) -> str:
+        """Итоговый HTTP RPC endpoint (переопределение или Helius)."""
+        if self.rpc_http_url.strip():
+            return self.rpc_http_url.strip()
+        return _HELIUS_HTTP_TEMPLATE.format(
+            net=self.solana_network, key=self.helius_api_key
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def ws_rpc_url(self) -> str:
+        """Итоговый WebSocket RPC endpoint (переопределение или Helius)."""
+        if self.rpc_ws_url.strip():
+            return self.rpc_ws_url.strip()
+        return _HELIUS_WS_TEMPLATE.format(
+            net=self.solana_network, key=self.helius_api_key
+        )
+
+    # ------------------------------------------------------------------ Хелперы
+    def sol_to_lamports(self, amount_sol: float) -> int:
+        """Переводит SOL в лампорты с округлением вниз.
+
+        Args:
+            amount_sol: Количество SOL.
+
+        Returns:
+            Целое количество лампортов.
+        """
+        return int(amount_sol * LAMPORTS_PER_SOL)
+
+    def lamports_to_sol(self, lamports: int) -> float:
+        """Переводит лампорты в SOL.
+
+        Args:
+            lamports: Количество лампортов.
+
+        Returns:
+            Количество SOL как float.
+        """
+        return lamports / LAMPORTS_PER_SOL
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def trade_amount_lamports(self) -> int:
+        """Размер входного ордера в лампортах."""
+        return self.sol_to_lamports(self.trade_amount_sol)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def jito_tip_lamports(self) -> int:
+        """Размер чаевых Jito в лампортах."""
+        return self.sol_to_lamports(self.jito_tip_sol)
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Возвращает кэшированный объект настроек.
+
+    Returns:
+        Singleton :class:`Settings`, собранный из окружения.
+    """
+    return Settings()
+
+
+#: Модульный синглтон настроек для удобного импорта.
+settings: Settings = get_settings()

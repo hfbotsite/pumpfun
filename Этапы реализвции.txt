@@ -1,0 +1,36 @@
+
+Исходные этапы реализации:
+__Этап 0 — Каркас.__ Создание структуры, venv, `requirements.txt`, `.env.example`, `README.md`. Проверка: `pip install -r requirements.txt` + `python -c "import solders"`.
+
+__Этап 1 — Конфиг и модели.__ `config/settings.py` (все переменные из ТЗ через pydantic-settings) + `models/trade_data.py` (PoolInfo, TradeEvent, TradeSignal, OrderResult, JitoBundle). Проверка: `python -c "import config.settings"`, юнит-тест валидации.
+
+__Этап 2 — Утилиты и константы.__ `utils/constants.py` (реальные program ID Pump.fun/Raydium/Serum, 8 tip-аккаунтов Jito, дискриминаторы), `utils/logger.py`, `utils/latency.py`. Проверка: тест констант (валидный base58, длина).
+
+__Этап 3 — RPC/WS клиент.__ `core/client.py`: async RPC (aiohttp) + WS-менеджер с экспоненциальным backoff, health-check, `getAccountInfo`, `getTokenAccountBalance`, `simulateTransaction`. Проверка: подключение к devnet/публичному RPC, получение слота.
+
+__Этап 4 — Слушатель.__ `core/listener.py`: подписки `logsSubscribe` (Pump.fun, Raydium) и `accountSubscribe`, парсинг событий в `TradeEvent`, ре-паблиш в `asyncio.Queue`. Проверка: реальный стрим новых транзакций Pump.fun.
+
+__Этап 5 — Фильтры.__ `base_filter.py`, `liquidity_guard.py` (pool_sol, price impact по x·y=k, `min_tokens_out` с 20% дисконтом), `security_guard.py` (freeze/mint authority через `getAccountInfo` mint, проверка LP burn/lock). Проверка: юнит-тесты на синтетических пулах.
+
+__Этап 6 — Аналитика.__ `analytics/indicators.py`: скользящие окна (3/5/10 с) для Buy/Sell ratio, Volume Velocity, price drop, детект крупных продаж. Проверка: юнит-тесты на таймсериях событий.
+
+__Этап 7 — Стратегия.__ `strategies/base_strategy.py` + `momentum_pump.py`: вход по momentum-триггерам, движок выходов (каскадный TP +30/+50%, trailing stop 8–10%, hard SL −12%, volume exhaustion). Проверка: таблица сценариев (вход/трейл/стоп/импульс затух).
+
+__Этап 8 — Билдер транзакций.__ `core/tx_builder.py`: инструкции Pump.fun buy/sell и Raydium AMM swap, Compute Budget (priority fee), tip-инструкция Jito, `jitodontfront` для анти-сэндвича. Проверка: `simulateTransaction` на реальном пуле (без отправки).
+
+__Этап 9 — Исполнитель.__ `core/executor.py`: `sendBundle` через Jito block engine (регион из конфига), `getBundleStatuses`/`getInflightBundleStatuses`, Jupiter-fallback, возврат `OrderResult`. Проверка: send в testnet / devnet.
+
+__Этап 10 — Пайплайн.__ `main.py`: склейка listener → filters → strategy → executor, управление состоянием позиции, graceful shutdown. Проверка: запуск на devnet с логированием всего пути решения.
+
+__Этап 11 — Бэктестер.__ `analytics/backtester.py`: прогон CSV событий пула через те же фильтры/стратегию (переиспользование кода, не копия), метрики (PnL, win-rate, среднее время удержания, просадка). Проверка: прогон на тестовом CSV.
+
+__Этап 12 — Финальная верификация.__ `pytest`, `mypy`, прогон против реального RPC (dry-run), чеклист «нет TODO».
+
+
+Используя MCP-сервер верифицируй код проекта pumpfun: проверь синтаксис всех скриптов, исправь неудачные строки, убери лишние импорты, добавь нужные импорты там, где ты их забыл, проверь мусорные тернарники if False и некорректные clamp, удали неиспользуемые функции и методы, и связанные с ними переменные и импорты. Также `loguru` стабит собственный класс `Logger`. Поправь импорт в logger.py. Тип `logger` в стабах — `loguru.Logger` (не `_logger.Logger`). Поправь импорт на TYPE_CHECKING.
+
+
+
+Создай обертку для запуска MCP-сервера C:\Users\andre\Documents\GitHub\codebase-memory-mcp внутри папки проекта НАЗВАНИЕ ПРОЕКТА. Загляни и скорректируй если требуется правила sixth для проекта.
+
+

@@ -1,0 +1,102 @@
+Проект: Solana Pump Momentum & Liquidity Scalping BotЯзык разработки: Python 3.11+
+Целевые DEX/Платформы: Pump.fun / Raydium (Solana Network)
+Основная задача: Высокочастотное считывание сигналов, жесткая фильтрация ликвидности/безопасности и быстрый впуск/выпуск позиций (Scalping) с динамическим проскальзыванием.1. Архитектура и файловая структураPlaintextpump_bot/
+│
+├── config/
+│   ├── __init__.py
+│   └── settings.py              # Pydantic Settings (.env configuration)
+│
+├── core/
+│   ├── __init__.py
+│   ├── client.py                # Async Solana RPC / WebSocket manager (Helius / QuickNode)
+│   ├── listener.py              # Stream listener for new pools and trade events
+│   └── executor.py              # Transaction builder & submitter (with Jito Tips)
+│
+├── filters/
+│   ├── __init__.py
+│   ├── base_filter.py           # Abstract Base Class for filters
+│   ├── liquidity_guard.py       # Liquidity, Pool SOL, Price Impact & Buy Slippage
+│   └── security_guard.py        # Token contract safety (Freeze/Mint authority, LP Burn)
+│
+├── strategies/
+│   ├── __init__.py
+│   ├── base_strategy.py         # Abstract Strategy Class
+│   └── momentum_pump.py         # Momentum, Buy/Sell Ratio & Trailing TP/SL Engine
+│
+├── analytics/
+│   ├── __init__.py
+│   ├── indicators.py            # Real-time metrics (Volume Velocity, Buy Ratio, Price Drops)
+│   └── backtester.py            # Backtesting engine using historical CSV files
+│
+├── models/
+│   ├── __init__.py
+│   └── trade_data.py            # Pydantic data schemas (Pool, Trade, Signal, Order)
+│
+├── logs/                        # Loguru output folder
+├── .env.example                 # Environment variables template
+├── main.py                      # Main Async Pipeline Entrypoint
+└── requirements.txt             # Project dependencies
+2. Требования к ключевым модулямМодуль config/settings.pyХранение параметров в .env через pydantic-settings.Ключевые переменные:BUY_SLIPPAGE_PCT: 20.0 (Проскальзывание на вход).SELL_SLIPPAGE_PCT: 25.0 (Проскальзывание на выход).MIN_POOL_SOL: 30.0 (Минимальная ликвидность пула в SOL).MAX_PRICE_IMPACT_PCT: 5.0 (Предельный Price Impact нашего ордера).TRADE_AMOUNT_SOL: 0.5 (Размер входного ордера).JITO_TIP_SOL: 0.005 (Чаевые валидатору Jito).Модуль filters/liquidity_guard.pyФункционал:check_pool_liquidity(pool, trade_amount): проверяет pool_sol >= MIN_POOL_SOL и расчетный Price Impact <= MAX_PRICE_IMPACT_PCT.calculate_expected_tokens(pool, sol_amount): рассчитывает min_tokens_out по формуле постоянного произведения AMM ($x \cdot y = k$) с учетом жесткого дисконта BUY_SLIPPAGE_PCT (20%).Модуль strategies/momentum_pump.pyВход:Прохождение LiquidityGuard и SecurityGuard.Buy/Sell Ratio >= 0.70 за последние 5–10 секунд.Volume Velocity >= 1.5 SOL суммарных покупок за последние 5 секунд.Выход:Take Profit: Каскадный (50% позиции при +50%, остаток при +100%).Trailing Stop: Динамический откат на 10% от зарегистрированного пика цены.Volume Exhaustion: Резкое падение объема покупок или серия крупных продаж.Модуль core/executor.pyСборка транзакций покупки/продажи с использованием solders.Явная передача параметра min_amount_out (с учетом BUY_SLIPPAGE_PCT 20%) в структуру инструкции Raydium/Pump.fun.Отправка транзакции через Jito Engine API с чаевыми для обхода MEV и гарантированного вхождения в блок.
+
+ПРОМПТ:
+Ты — Lead Python/Solana Blockchain Developer. Твоя задача — сгенерировать полный, готовый к продакшену код торгового бота на Python 3.11+ для сверхбыстрого моментум-скальпинга мемкоинов в сети Solana (Pump.fun / Raydium).
+
+### 1. ОСНОВНЫЕ ХАРАКТЕРИСТИКИ ТОРГОВЛИ:
+- Высокочастотный скальпинг (High-Frequency Scalping): средняя длительность удержания позиции составляет всего 1–3 секунды.
+- Динамика сделок: быстрый вход на импульсе объема и мгновенная фиксация прибыли или сброс позиции при малейшем затухании импульса.
+- Высокие требования к проскальзыванию и приоритету:
+  * BUY_SLIPPAGE_PCT: 20.0% (жестко заданный запас на покупку для мгновенного исполнения).
+  * SELL_SLIPPAGE_PCT: 25.0% (динамический запас на мгновенный сброс).
+
+### 2. ПОДКЛЮЧЕНИЕ К SOLFEED / WEBSOCKET:
+- Реализовать асинхронный менеджер WebSocket-соединений (`core/client.py` и `core/listener.py`).
+- Подключение к Solfeed / Helius Geyser WebSocket для потокового получения:
+  1. Логов программ (Program Logs / LogsSubscribe) для Pump.fun и Raydium.
+  2. Изменений состояния аккаунтов пулов (AccountSubscribe) в режиме реального времени.
+- Обработка разрывов связи: авто-реконнект с экспоненциальной задержкой (Exponential Backoff), минимальный overhead при сериализации/десериализации JSON/Borsh.
+
+### 3. ЛОГИКА И КРИТЕРИИ ВХОДА (ПОКУПКА / BUY):
+Вход выполняется только при УСПЕШНОМ прохождении ВСЕХ следующих фильтров подряд:
+1. Liquidity Guard (`filters/liquidity_guard.py`):
+   - `pool_sol >= MIN_POOL_SOL` (по умолчанию 30.0 SOL).
+   - `Price Impact` одного ордера <= 5.0%.
+   - Расчет `min_tokens_out` с удержанием `BUY_SLIPPAGE_PCT = 20.0%` по AMM-формуле constant product ($x \cdot y = k$).
+2. Security Guard (`filters/security_guard.py`):
+   - `Freeze Authority == None`, `Mint Authority == None`.
+   - Проверка LP Burn / Lock (> 90%).
+3. Momentum Trigger (`strategies/momentum_pump.py`):
+   - `Buy/Sell Ratio >= 0.70` (более 70% сделок за последние 3–5 секунд — покупки).
+   - `Volume Velocity >= 1.5 SOL` суммарных покупок за 3–5 секунд.
+
+### 4. ЛОГИКА И КРИТЕРИИ ВЫХОДА (ПРОДАЖА / SELL):
+Учитывая таймфрейм позиции в 1–3 секунды, реализовать 3 параллельных триггера выхода:
+1. Micro Take-Profit / Trailing Stop:
+   - Каскадный фиксированный Тейк-Профит (+30% / +50%).
+   - Скользящий Трейлинг-Стоп: если цена достигла локального пика и откатилась на 8–10%, выбивать сделку немедленно.
+2. Emergency Stop-Loss (Жесткий стоп):
+   - Падение цены на -12% от точки входа.
+3. Volume Exhaustion / Adverse Flow (Затухание импульса):
+   - Появление хотя бы одной крупной продажи ($> 1.0\text{ SOL}$) или резкое падение Buy/Sell Ratio ниже 0.40 за последние 2 секунды.
+
+### 5. КРИТИЧЕСКИ ВАЖНЫЕ ТЕХНИЧЕСКИЕ ТРЕБОВАНИЯ:
+1. Низкий Ping и оптимизация задержек (Latency):
+   - Использовать асинхронные HTTP/WS сессии (`aiohttp` / `websockets` с `uvloop`).
+   - Использование микросекундных таймеров для замера задержек RPC/Node.
+   - Поддержка настройки Compute Budget (Priority Fee / Micro-lamports) для гарантированной вставки транзакции в ближайший слот Solana.
+2. Анти-сэндвич и защита через JITO Bundles:
+   - ВСЕ транзакции входа и выхода ДОЛЖНЫ формироваться и отправляться в виде Jito Bundles через Jito Block Engine API (`core/executor.py`).
+   - Добавление обязательной инструкции чаевых валидатору (`JITO_TIP_SOL` = 0.005 SOL) для защиты от MEV-ботов, сэндвич-атак и исключения зависания транзакций в мемпуле.
+
+### СТРУКТУРА ПРОЕКТА ДЛЯ ГЕНЕРАЦИИ:
+- `config/settings.py` (Pydantic Settings для `.env`)
+- `models/trade_data.py` (Pydantic модели PoolInfo, TradeSignal, OrderResult, JitoBundle)
+- `core/client.py` (Асинхронный клиент RPC & Solfeed WS)
+- `core/listener.py` (Слушатель Geyser WS / Solfeed с парсингом Borsh/JSON)
+- `core/executor.py` (Сборка Solders instructions + Jito Engine API Sender)
+- `filters/base_filter.py` & `filters/liquidity_guard.py` (Пул, Price Impact, 20% Buy Slippage)
+- `filters/security_guard.py` (Проверка контракта)
+- `strategies/momentum_pump.py` (Быстрая логика входа/выхода на 1–3 секунды)
+- `analytics/indicators.py` (Расчет метрик скорости объемов за секунды)
+- `main.py` (Async Pipeline)
+
+Напиши ПОЛНЫЙ, рабочий, высокопроизводительный код на Python без заглушек (`# TODO` недопустимы) с подробными docstrings на русском языке.
