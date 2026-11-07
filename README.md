@@ -20,9 +20,11 @@ Raydium по умолчанию **отключён** (`ENABLED_DEX=pump_fun`); �
 - **Liquidity Guard**: минимальная ликвидность пула (`MIN_POOL_SOL`), предельный
   Price Impact (`MAX_PRICE_IMPACT_PCT`), расчёт `min_tokens_out` по формуле
   постоянного произведения `x·y = k` с дисконтом `BUY_SLIPPAGE_PCT`.
-- **Security Guard**: проверка `mint authority == None`, `freeze authority == None`,
-  доля сожжённого/залоченного LP (`MIN_LP_BURNED_PCT`); нет данных — отказ
-  (fail-closed).
+- **Контур отбора токенов до торговли**: каждое новое имя монеты при первом
+  обнаружении проходит фоновую проверку контракта (mint/freeze authority, LP
+  burn) и получает вердикт `approved/rejected` в SQLite-аудит; горячий путь
+  торговли не делает ни одного RPC-запроса по безопасности, а отклонённые
+  токены вычищаются из реестра пулов и индикаторов.
 - **Momentum Trigger**: Buy/Sell Ratio и Volume Velocity в скользящем окне.
 - **Движок выходов**: каскадный TP (+30% / +50%), trailing stop (откат от пика),
   hard stop-loss (−12%), детектор крупных продаж и падения Buy/Sell Ratio,
@@ -55,6 +57,12 @@ Helius WS (logsSubscribe: Pump.fun, PumpSwap AMM; accountSubscribe: пулы)
 core/listener.py  PoolStreamListener ── парсинг Anchor-логов в TradeEvent
   │                 (bonding curve: дискриминатор TradeEvent;
   │                  AMM: синтез сделок из дельт vault-ов)
+  │
+  ├─[новый mint]──► core/screening.py  TokenScreeningService ── КОНТУР ОТБОРА
+  │                   очередь → проверка контракта по правилам
+  │                   (mint/freeze authority, LP burn) → вердикт
+  │                   в кэш + SQLite token_screening (аудит, рестарт);
+  │                   rejected → пул вычищается из реестра/индикаторов
   ▼
 asyncio.Queue (8192, put_nowait — WS-колбэк не блокируется)
   │
@@ -65,19 +73,22 @@ core/pipeline.py  LivePipeline ── consume-loop, обслуживание р�
 core/trader.py  MomentumTrader ── единственная точка решений:
   │               индикаторы → фильтры → стратегия → заявка → исполнитель
   ├─► analytics/indicators.py   скользящие окна (ratio, velocity, цена)
-  ├─► filters/                  LiquidityGuard, SecurityGuard (fail-closed)
+  ├─► core/screening.py provider  готовый вердикт из кэша (ноль RPC):
+  │     approved → TokenSecurity; rejected/нет вердикта → None (fail-closed)
+  ├─► filters/                  LiquidityGuard, SecurityGuard (страховка)
   ├─► strategies/momentum_pump.py   триггеры входа/выхода (чистая логика)
   ├─► core/orders.py            котировки AMM и сборка Buy/SellOrder
   └─► core/executor.py          план свапа → компиляция v0 → подпись
         ├─ core/tx_builder.py   инструкции bonding curve Pump.fun
-        ├─ core/jupiter.py      fallback-маршрут (AMM/миграция)
+        ├─ core/jupiter.py      fallback-маршрут (AMM/миграция, опция)
         ├─ core/jito.py         sendBundle + ожидание Landed
         └─ core/dry_run.py      бумажное исполнение (--dry-run, бэктест)
   │
   ▼
 core/portfolio.py  PortfolioManager ── memory-ledger позиций
   └─► core/persistence.py  PortfolioStore ── SQLite write-through
-        (таблицы positions / closed_trades; рестарт → load_open_positions)
+        (таблицы positions / closed_trades / token_screening;
+         рестарт → load_open_positions + load_persisted вердикты)
 ```
 
 Исполнители подключаются инъекцией через Protocol `TraderExecutor`
@@ -97,6 +108,7 @@ pumpfun/
 │   ├── listener.py             # подписки logs/account, парсинг → TradeEvent
 │   ├── decoders.py             # Borsh-раскладки: TradeEvent, BondingCurve, пулы
 │   ├── pool_registry.py        # TrackedPool / PoolRegistry (индексы, prune)
+│   ├── screening.py            # контур отбора: очередь, вердикты, provider
 │   ├── pipeline.py             # LivePipeline: очередь, рестарт позиций, stop
 │   ├── trader.py               # MomentumTrader: событие → решение
 │   ├── orders.py               # quote_entry/exit, build_*, TraderExecutor
@@ -107,7 +119,7 @@ pumpfun/
 │   ├── dry_run.py              # бумажный исполнитель (dry-run/бэктест)
 │   ├── security.py             # TokenSecurityResolver (mint/LP через RPC)
 │   ├── portfolio.py            # PortfolioManager: позиции, PnL, статистика
-│   └── persistence.py          # PortfolioStore: SQLite (positions/closed_trades)
+│   └── persistence.py          # PortfolioStore: SQLite (позиции/сделки/отбор)
 ├── filters/                    # BaseFilter/FilterChain, LiquidityGuard, SecurityGuard
 ├── strategies/                 # BaseStrategy, MomentumPumpStrategy (вход/выход)
 ├── analytics/
@@ -117,7 +129,7 @@ pumpfun/
 ├── models/trade_data.py        # Pydantic-схемы: Pool, TradeEvent, Signal, Order…
 ├── utils/                      # constants (адреса/дискриминаторы), amm (x·y=k),
 │                               # spl (keypair/ATA/mint), latency, logger (loguru)
-├── tests/                      # pytest: 10 модулей, 108 тестов
+├── tests/                      # pytest: 11 модулей, 123 теста
 ├── data/                       # SQLite-БД позиций (создаётся автоматически)
 └── logs/                       # loguru: bot_*.log, errors_*.log (ротация)
 ```
@@ -157,7 +169,8 @@ cp .env.example .env   # заполните HELIUS_API_KEY и кошелёк
 | `JITO_REQUIRE_CONFIRMATION` | `true` | Ждать `Landed` от Jito перед учётом позиции |
 | `TRADE_AMOUNT_SOL` | `0.5` | Размер входного ордера |
 | `BUY/SELL_SLIPPAGE_PCT` | `20/25` | Допустимое проскальзывание входа/выхода |
-| `REQUIRE_MINT/FREEZE_AUTHORITY_NULL`, `MIN_LP_BURNED_PCT` | `true/true/90` | Правила отбора токена перед входом (см. раздел Security-контур) |
+| `REQUIRE_MINT/FREEZE_AUTHORITY_NULL`, `MIN_LP_BURNED_PCT` | `true/true/90` | Правила контура отбора (применяются до торговли, см. архитектуру) |
+| `SCREEN_RECHECK_SECONDS` | `600` | TTL вердикта отбора до повторной проверки |
 
 Полный список — в [.env.example](.env.example) и `config/settings.py`.
 

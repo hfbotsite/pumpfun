@@ -178,6 +178,13 @@ class Settings(BaseSettings):
     min_lp_burned_pct: float = Field(
         default=90.0, ge=0, le=100, description="Минимальная доля сожжённого/залоченного LP, %."
     )
+    screen_recheck_seconds: float = Field(
+        default=600.0, gt=0,
+        description=(
+            "TTL вердикта отбора токена до повторной проверки, c "
+            "(authorities могут быть сняты позже — токен может «вылечиться»)."
+        ),
+    )
 
     # ---------------------------------------------------------------- Jupiter
     use_jupiter_fallback: bool = Field(

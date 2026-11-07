@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import math
+import time
 from enum import StrEnum
 from typing import Any
 
@@ -198,6 +199,49 @@ class TokenSecurity(BaseModel):
     def freeze_authority_is_null(self) -> bool:
         """Снят ли freeze authority."""
         return self.freeze_authority is None
+
+
+class ScreeningVerdict(BaseModel):
+    """Вердикт службы отбора токенов (до допуска к торговле).
+
+    Фиксирует результат проверки контракта по правилам security-контура:
+    кто, когда и почему допущен или отклонён. Хранится в памяти и в
+    SQLite-таблице ``token_screening`` для аудита и переживания рестарта.
+    """
+
+    base_mint: str = Field(description="Mint мемкоина.")
+    approved: bool = Field(description="Допущен ли токен к торговле.")
+    reason: str = Field(default="", description="Человекочитаемое обоснование вердикта.")
+    mint_authority: str | None = Field(default=None, description="Mint authority на момент проверки.")
+    freeze_authority: str | None = Field(default=None, description="Freeze authority на момент проверки.")
+    lp_burned_pct: float = Field(default=0.0, ge=0, le=100, description="Доля сожжённого/залоченного LP, %.")
+    checked_at: float = Field(default=0.0, ge=0, description="Время проверки, unix ts.")
+
+    def age_seconds(self, now: float | None = None) -> float:
+        """Возраст вердикта в секундах.
+
+        Args:
+            now: Текущее время, unix ts (по умолчанию — системное).
+
+        Returns:
+            Секунды с момента проверки (0, если время не зафиксировано).
+        """
+        if self.checked_at <= 0:
+            return 0.0
+        reference = time.time() if now is None else now
+        return max(0.0, reference - self.checked_at)
+
+    def to_security(self) -> TokenSecurity:
+        """Преобразует вердикт в схему для SecurityGuard.
+
+        Returns:
+            :class:`TokenSecurity` с зафиксированными на проверке данными.
+        """
+        return TokenSecurity(
+            mint_authority=self.mint_authority,
+            freeze_authority=self.freeze_authority,
+            lp_burned_pct=self.lp_burned_pct,
+        )
 
 
 # --------------------------------------------------------------------------- #

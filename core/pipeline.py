@@ -43,6 +43,7 @@ from core.orders import TraderExecutor
 from core.persistence import PortfolioStore
 from core.pool_registry import TrackedPool
 from core.portfolio import PortfolioManager
+from core.screening import ScreeningVerdict, TokenScreeningService
 from core.security import TokenSecurityResolver
 from core.trader import MomentumTrader
 from models.trade_data import SignalAction, TradeEvent
@@ -165,6 +166,7 @@ class LivePipeline:
         self._ws: SolanaWsClient | None = None
         self._listener: PoolStreamListener | None = None
         self._resolver: TokenSecurityResolver | None = None
+        self._screening: TokenScreeningService | None = None
         self._executor: TraderExecutor | None = None
         self._trader: MomentumTrader | None = None
         self._store: PortfolioStore | None = None
@@ -223,6 +225,17 @@ class LivePipeline:
         """Реестр метрик латентности пайплайна."""
         return self._latency
 
+    @property
+    def screening(self) -> TokenScreeningService:
+        """Служба отбора токенов.
+
+        Raises:
+            PipelineError: Если пайплайн ещё не запущен.
+        """
+        if self._screening is None:
+            raise PipelineError("пайплайн не запущен: служба отбора недоступна")
+        return self._screening
+
     # ---------------------------------------------------------- Жизненный цикл
     async def start(self) -> None:
         """Поднимает транспорт, слушателя, трейдера и исполнителя.
@@ -263,6 +276,16 @@ class LivePipeline:
         )
         if self._db_path:
             self._store = PortfolioStore(self._db_path)
+
+        # Контур отбора: проверка каждого нового mint до торговых сигналов.
+        self._screening = TokenScreeningService(
+            self._resolver,
+            store=self._store,
+            on_rejected=self._on_screening_rejected,
+        )
+        self._screening.load_persisted()
+        await self._screening.start()
+
         portfolio = PortfolioManager(
             max_concurrent_positions=self._max_concurrent_positions,
             store=self._store,
@@ -278,7 +301,7 @@ class LivePipeline:
         self._trader = MomentumTrader(
             executor=executor,
             portfolio=portfolio,
-            security_provider=self._resolver.resolve_for_pool,
+            security_provider=self._screening.provider,
             indicators=StreamingIndicators(window),
             capital_sol=self._capital_sol,
         )
@@ -315,6 +338,11 @@ class LivePipeline:
             closed = self._trader.close_all()
             if closed:
                 logger.info("Принудительно закрыто позиций: {}", len(closed))
+
+        if self._screening is not None:
+            with contextlib.suppress(Exception):
+                await self._screening.stop()
+            self._screening = None
 
         open_positions = (
             self._trader.portfolio.all_positions() if self._trader else []
@@ -451,9 +479,36 @@ class LivePipeline:
         Args:
             pool: Зарегистрированный пул.
         """
+        if self._screening is not None:
+            self._screening.submit(pool.to_pool_info())
         logger.info(
             "Новый пул в работе: {} ({}, mint {})",
             pool.pool_address,
             pool.dex.value,
             pool.base_mint,
+        )
+
+    async def _on_screening_rejected(self, verdict: ScreeningVerdict) -> None:
+        """Реакция контура отбора на отклонённый токен.
+
+        Пул отклонённого mint вычищается из реестра и индикаторов, чтобы
+        события по нему больше не обрабатывались.
+
+        Args:
+            verdict: Отклоняющий вердикт.
+        """
+        listener = self._listener
+        if listener is None:
+            return
+        pool = listener.registry.get_by_mint(verdict.base_mint)
+        if pool is None:
+            return
+        listener.registry.remove(pool.pool_address)
+        if self._trader is not None:
+            self._trader.forget_pool(pool.pool_address)
+        logger.warning(
+            "Пул {} удалён: токен {} отклонён отбором ({})",
+            pool.pool_address,
+            verdict.base_mint,
+            verdict.reason,
         )

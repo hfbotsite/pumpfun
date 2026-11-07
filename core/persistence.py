@@ -23,7 +23,7 @@ import sqlite3
 from pathlib import Path
 from typing import Self
 
-from models.trade_data import DEXType, Position
+from models.trade_data import DEXType, Position, ScreeningVerdict
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -61,6 +61,16 @@ CREATE TABLE IF NOT EXISTS closed_trades (
 
 CREATE INDEX IF NOT EXISTS idx_closed_trades_base_mint
     ON closed_trades(base_mint);
+
+CREATE TABLE IF NOT EXISTS token_screening (
+    base_mint        TEXT PRIMARY KEY,
+    approved         INTEGER NOT NULL,
+    reason           TEXT    NOT NULL,
+    mint_authority   TEXT,
+    freeze_authority TEXT,
+    lp_burned_pct    REAL    NOT NULL,
+    checked_at       REAL    NOT NULL
+);
 """
 
 
@@ -242,6 +252,70 @@ class PortfolioStore:
             ),
         )
         self._conn.commit()
+
+    # ---------------------------------------------------------------- Отбор токенов
+    def save_screening(self, verdict: ScreeningVerdict) -> None:
+        """Сохраняет (вставляет или обновляет) вердикт отбора токена.
+
+        Args:
+            verdict: Результат проверки контракта.
+        """
+        self._conn.execute(
+            """
+            INSERT INTO token_screening (
+                base_mint, approved, reason, mint_authority,
+                freeze_authority, lp_burned_pct, checked_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(base_mint) DO UPDATE SET
+                approved         = excluded.approved,
+                reason           = excluded.reason,
+                mint_authority   = excluded.mint_authority,
+                freeze_authority = excluded.freeze_authority,
+                lp_burned_pct    = excluded.lp_burned_pct,
+                checked_at       = excluded.checked_at
+            """,
+            (
+                verdict.base_mint,
+                int(verdict.approved),
+                verdict.reason,
+                verdict.mint_authority,
+                verdict.freeze_authority,
+                verdict.lp_burned_pct,
+                verdict.checked_at,
+            ),
+        )
+        self._conn.commit()
+
+    def load_screenings(self) -> list[ScreeningVerdict]:
+        """Читает все сохранённые вердикты отбора.
+
+        Returns:
+            Список :class:`~models.trade_data.ScreeningVerdict`.
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT base_mint, approved, reason, mint_authority,
+                   freeze_authority, lp_burned_pct, checked_at
+            FROM token_screening
+            """
+        )
+        verdicts: list[ScreeningVerdict] = []
+        for row in cursor:
+            try:
+                verdicts.append(
+                    ScreeningVerdict(
+                        base_mint=str(row[0]),
+                        approved=bool(row[1]),
+                        reason=str(row[2]),
+                        mint_authority=str(row[3]) if row[3] is not None else None,
+                        freeze_authority=str(row[4]) if row[4] is not None else None,
+                        lp_burned_pct=float(row[5]),
+                        checked_at=float(row[6]),
+                    )
+                )
+            except Exception as exc:  # повреждённая строка не роняет старт
+                logger.warning("Пропущен повреждённый вердикт отбора из БД: {}", exc)
+        return verdicts
 
     # ---------------------------------------------------------------- Жизненный цикл
     def closed_trades_summary(self) -> dict[str, float | int]:
