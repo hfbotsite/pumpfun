@@ -120,6 +120,15 @@ class Settings(BaseSettings):
         default=100_000, ge=0, description="Priority fee, micro-lamports per CU."
     )
 
+    # ------------------------------------------------------------------ DEX
+    enabled_dex: str = Field(
+        default="pump_fun",
+        description=(
+            "Включённые DEX через запятую: pump_fun и/или raydium. "
+            "По умолчанию только Pump.fun (bonding curve + PumpSwap AMM)."
+        ),
+    )
+
     # ------------------------------------------------------------------ Вход
     entry_window_seconds: float = Field(
         default=5.0, gt=0, description="Окно анализа входных триггеров, c."
@@ -221,6 +230,34 @@ class Settings(BaseSettings):
             return value.strip().upper()
         return value
 
+    @field_validator("enabled_dex", mode="before")
+    @classmethod
+    def _normalize_enabled_dex(cls, value: object) -> object:
+        """Нормализует список включённых DEX и отсекает пустые части.
+
+        Args:
+            value: Строка вида ``pump_fun`` или ``pump_fun,raydium``.
+
+        Returns:
+            Нормализованная строка через запятую.
+
+        Raises:
+            ValueError: Если указан неизвестный DEX.
+        """
+        if isinstance(value, str):
+            known = {"pump_fun", "raydium"}
+            parts = [part.strip().lower() for part in value.split(",") if part.strip()]
+            unknown = [part for part in parts if part not in known]
+            if unknown:
+                raise ValueError(
+                    "неизвестные DEX в ENABLED_DEX: "
+                    f"{', '.join(unknown)} (допустимо: pump_fun, raydium)"
+                )
+            if not parts:
+                return "pump_fun"
+            return ",".join(parts)
+        return value
+
     # ------------------------------------------------------------- Вычисляемые
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -276,6 +313,24 @@ class Settings(BaseSettings):
     def jito_tip_lamports(self) -> int:
         """Размер чаевых Jito в лампортах."""
         return self.sol_to_lamports(self.jito_tip_sol)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def enabled_dex_types(self) -> list[str]:
+        """Список включённых DEX (значения ``DEXType``)."""
+        return [part.strip() for part in self.enabled_dex.split(",") if part.strip()]
+
+    def dex_enabled(self, dex: object) -> bool:
+        """Проверяет, включён ли DEX для обнаружения и торговли.
+
+        Args:
+            dex: Значение ``DEXType`` или его строковое значение.
+
+        Returns:
+            ``True``, если DEX входит в ``ENABLED_DEX``.
+        """
+        dex_value = dex.value if hasattr(dex, "value") else str(dex)
+        return dex_value in self.enabled_dex_types
 
 
 @lru_cache(maxsize=1)

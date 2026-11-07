@@ -33,6 +33,7 @@ from typing import Any, Self
 
 from solders.pubkey import Pubkey
 
+from config.settings import settings
 from core.client import RpcError, SolanaRpcClient, SolanaWsClient
 from core.decoders import (
     DecodedPool,
@@ -201,9 +202,10 @@ class PoolStreamListener:
             )
             self._log_subscriptions.append(token)
         logger.info(
-            "Слушатель запущен: программы {}, {}",
+            "Слушатель запущен: программы {}, {} (включённые DEX: {})",
             PUMP_FUN_PROGRAM_ID,
             PUMP_FUN_AMM_PROGRAM_ID,
+            settings.enabled_dex,
         )
 
     async def stop(self) -> None:
@@ -560,6 +562,8 @@ class PoolStreamListener:
             (PUMP_FUN_AMM_PROGRAM_ID, DEXType.PUMP_FUN),
             (RAYDIUM_AMM_V4_PROGRAM_ID, DEXType.RAYDIUM),
         ):
+            if not settings.dex_enabled(dex):
+                continue
             pool = await self._find_amm_pool(program_id, dex, mint)
             if pool is not None:
                 return pool

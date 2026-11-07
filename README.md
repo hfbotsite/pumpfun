@@ -1,22 +1,32 @@
 # Solana Pump Momentum & Liquidity Scalping Bot
 
-Высокочастотный скальпинг-бот для мемкоинов в сети Solana (Pump.fun / Raydium AMM v4).
+Высокочастотный скальпинг-бот для мемкоинов **Pump.fun** в сети Solana.
 Считывает поток сделок через WebSocket (Helius), жёстко фильтрует ликвидность и
 безопасность контракта, входит на импульсе объёма и выходит за 1–3 секунды через
 каскадный тейк-профит, трейлинг-стоп, жёсткий стоп-лосс и детектор затухания импульса.
 
+Поддерживаются обе стадии жизни токена Pump.fun: bonding curve (прямые
+инструкции) и PumpSwap AMM после миграции (через Jupiter fallback).
+Raydium по умолчанию **отключён** (`ENABLED_DEX=pump_fun`); вернуть его можно
+значением `ENABLED_DEX=pump_fun,raydium` — прямых Raydium-инструкций в коде
+нет, сделки по таким пулам всегда идут через Jupiter.
+
 ## Возможности
 
 - **Потоковый листенер**: `logsSubscribe` + `accountSubscribe` (Helius WebSocket) с
-  авто-реконнектом и экспоненциальным backoff.
+  авто-реконнектом и экспоненциальным backoff; события Pump.fun разбираются
+  из Anchor-логов (`TradeEvent`), для AMM-пулов сделки синтезируются из дельт
+  vault-балансов.
 - **Liquidity Guard**: минимальная ликвидность пула (`MIN_POOL_SOL`), предельный
   Price Impact (`MAX_PRICE_IMPACT_PCT`), расчёт `min_tokens_out` по формуле
   постоянного произведения `x·y = k` с дисконтом `BUY_SLIPPAGE_PCT`.
 - **Security Guard**: проверка `mint authority == None`, `freeze authority == None`,
-  доля сожжённого/залоченного LP (`MIN_LP_BURNED_PCT`).
+  доля сожжённого/залоченного LP (`MIN_LP_BURNED_PCT`); нет данных — отказ
+  (fail-closed).
 - **Momentum Trigger**: Buy/Sell Ratio и Volume Velocity в скользящем окне.
 - **Движок выходов**: каскадный TP (+30% / +50%), trailing stop (откат от пика),
-  hard stop-loss (−12%), детектор крупных продаж и падения Buy/Sell Ratio.
+  hard stop-loss (−12%), детектор крупных продаж и падения Buy/Sell Ratio,
+  таймаут удержания (`MAX_HOLD_SECONDS`).
 - **Исполнение через Jito**: сборка транзакций (`solders`), Compute Budget,
   Jito tip, `jitodontfront` (анти-сэндвич), отправка `sendBundle` с ожиданием
   подтверждения через `getBundleStatuses` (`JITO_REQUIRE_CONFIRMATION`) —
@@ -24,27 +34,90 @@
 - **Jupiter fallback**: резервный маршрут через агрегатор (`/swap-instructions`),
   используется для AMM-пулов и мигрировавших токенов (прямые инструкции
   строятся только для bonding curve Pump.fun).
-- **Персистентность позиций**: SQLite (`PORTFOLIO_DB_PATH`, WAL) — открытые
-  позиции переживают рестарт, бот продолжает вести их выходы; dry-run пишет
-  в отдельную БД (`data/bot_dry.db`).
-- **Бэктестер**: прогон исторических CSV через те же фильтры и стратегию.
+- **Персистентность позиций**: SQLite (`PORTFOLIO_DB_PATH`, WAL, write-through) —
+  открытые позиции переживают рестарт, бот продолжает вести их выходы; dry-run
+  пишет в отдельную БД (`data/bot_dry.db`).
+- **Несколько позиций**: лимит `MAX_CONCURRENT_POSITIONS` (по умолчанию 3)
+  и опциональный лимит капитала `CAPITAL_SOL`.
+- **Бэктестер**: прогон исторических CSV через те же фильтры, стратегию и
+  движок решений (переиспользует `MomentumTrader`, а не копию логики).
 
 ## Архитектура
 
+Живой путь события (dry-run отличается только исполнителем):
+
 ```
-pump_bot/
-├── config/settings.py          # pydantic-settings (.env)
-├── core/client.py              # Async RPC + WebSocket manager
-├── core/listener.py            # Слушатель логов/аккаунтов + парсинг
-├── core/tx_builder.py          # Сборка инструкций (Pump.fun / Raydium)
-├── core/executor.py            # Jito sendBundle + Jupiter fallback
-├── filters/                    # LiquidityGuard, SecurityGuard
-├── strategies/                 # MomentumPumpStrategy
-├── analytics/                  # indicators, backtester
-├── models/trade_data.py        # Pydantic-схемы
-├── utils/                      # constants, logger, latency, spl
-├── main.py                     # Точка входа (async pipeline)
-└── tests/                      # pytest
+Helius WS (logsSubscribe: Pump.fun, PumpSwap AMM; accountSubscribe: пулы)
+  │
+  ▼
+core/listener.py  PoolStreamListener ── парсинг Anchor-логов в TradeEvent
+  │                 (bonding curve: дискриминатор TradeEvent;
+  │                  AMM: синтез сделок из дельт vault-ов)
+  ▼
+asyncio.Queue (8192, put_nowait — WS-колбэк не блокируется)
+  │
+  ▼
+core/pipeline.py  LivePipeline ── consume-loop, обслуживание реестра пулов,
+  │                 восстановление открытых позиций из БД при старте
+  ▼
+core/trader.py  MomentumTrader ── единственная точка решений:
+  │               индикаторы → фильтры → стратегия → заявка → исполнитель
+  ├─► analytics/indicators.py   скользящие окна (ratio, velocity, цена)
+  ├─► filters/                  LiquidityGuard, SecurityGuard (fail-closed)
+  ├─► strategies/momentum_pump.py   триггеры входа/выхода (чистая логика)
+  ├─► core/orders.py            котировки AMM и сборка Buy/SellOrder
+  └─► core/executor.py          план свапа → компиляция v0 → подпись
+        ├─ core/tx_builder.py   инструкции bonding curve Pump.fun
+        ├─ core/jupiter.py      fallback-маршрут (AMM/миграция)
+        ├─ core/jito.py         sendBundle + ожидание Landed
+        └─ core/dry_run.py      бумажное исполнение (--dry-run, бэктест)
+  │
+  ▼
+core/portfolio.py  PortfolioManager ── memory-ledger позиций
+  └─► core/persistence.py  PortfolioStore ── SQLite write-through
+        (таблицы positions / closed_trades; рестарт → load_open_positions)
+```
+
+Исполнители подключаются инъекцией через Protocol `TraderExecutor`
+(`core/orders.py`), поэтому live, dry-run и бэктест используют одну и ту же
+математику котировок и один движок решений. Все сетевые данные безопасности —
+`core/security.py` (`TokenSecurityResolver`, RPC + TTL-кэш) — подаются
+трейдеру по требованию перед входом.
+
+## Структура проекта
+
+```
+pumpfun/
+├── main.py                     # CLI-точка входа: --dry-run/--status/--watchlist…
+├── config/settings.py          # pydantic-settings, все параметры (.env)
+├── core/
+│   ├── client.py               # async RPC (aiohttp) + WS-менеджер с backoff
+│   ├── listener.py             # подписки logs/account, парсинг → TradeEvent
+│   ├── decoders.py             # Borsh-раскладки: TradeEvent, BondingCurve, пулы
+│   ├── pool_registry.py        # TrackedPool / PoolRegistry (индексы, prune)
+│   ├── pipeline.py             # LivePipeline: очередь, рестарт позиций, stop
+│   ├── trader.py               # MomentumTrader: событие → решение
+│   ├── orders.py               # quote_entry/exit, build_*, TraderExecutor
+│   ├── tx_builder.py           # инструкции bonding curve, PDA, tip, memo
+│   ├── executor.py             # план свапа → v0-транзакция → Jito
+│   ├── jito.py                 # Block Engine: tip-аккаунты, sendBundle, статусы
+│   ├── jupiter.py              # /quote, /swap-instructions, lookup tables
+│   ├── dry_run.py              # бумажный исполнитель (dry-run/бэктест)
+│   ├── security.py             # TokenSecurityResolver (mint/LP через RPC)
+│   ├── portfolio.py            # PortfolioManager: позиции, PnL, статистика
+│   └── persistence.py          # PortfolioStore: SQLite (positions/closed_trades)
+├── filters/                    # BaseFilter/FilterChain, LiquidityGuard, SecurityGuard
+├── strategies/                 # BaseStrategy, MomentumPumpStrategy (вход/выход)
+├── analytics/
+│   ├── indicators.py           # RollingTradeWindow / StreamingIndicators
+│   ├── replay.py               # CSV-события, ReplayPoolState, сценарии
+│   └── backtester.py           # Backtester + BacktestReport (PnL, drawdown)
+├── models/trade_data.py        # Pydantic-схемы: Pool, TradeEvent, Signal, Order…
+├── utils/                      # constants (адреса/дискриминаторы), amm (x·y=k),
+│                               # spl (keypair/ATA/mint), latency, logger (loguru)
+├── tests/                      # pytest: 10 модулей, 108 тестов
+├── data/                       # SQLite-БД позиций (создаётся автоматически)
+└── logs/                       # loguru: bot_*.log, errors_*.log (ротация)
 ```
 
 ## Установка
@@ -69,6 +142,20 @@ cp .env.example .env   # заполните HELIUS_API_KEY и кошелёк
 
 - `WALLET_PRIVATE_KEY` — приватный ключ в base58, либо
 - `WALLET_KEYPAIR_PATH` — путь к JSON keypair (`solana-keygen new -o keys/id.json`).
+
+### Ключевые настройки
+
+| Переменная | По умолчанию | Смысл |
+|---|---|---|
+| `ENABLED_DEX` | `pump_fun` | Включённые DEX: `pump_fun` и/или `raydium` (неизвестные значения — ошибка старта) |
+| `MAX_CONCURRENT_POSITIONS` | `3` | Лимит одновременных позиций |
+| `CAPITAL_SOL` | пусто | Лимит свободного капитала, SOL |
+| `PORTFOLIO_DB_PATH` | `data/bot.db` | SQLite-БД позиций (пусто = только память) |
+| `JITO_REQUIRE_CONFIRMATION` | `true` | Ждать `Landed` от Jito перед учётом позиции |
+| `TRADE_AMOUNT_SOL` | `0.5` | Размер входного ордера |
+| `BUY/SELL_SLIPPAGE_PCT` | `20/25` | Допустимое проскальзывание входа/выхода |
+
+Полный список — в [.env.example](.env.example) и `config/settings.py`.
 
 ## Запуск
 
