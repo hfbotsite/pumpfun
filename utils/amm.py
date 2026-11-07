@@ -111,7 +111,7 @@ def min_out_with_slippage(quoted_out: int, slippage_pct: float) -> int:
     """
     if quoted_out <= 0:
         return 0
-    factor = max(0.0, 1.0 - slippage_pct / 100.0)
+    factor = max(0.0, 1.0 - max(0.0, slippage_pct) / 100.0)
     result = int(quoted_out * factor)
     return max(1, result)
 

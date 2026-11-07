@@ -16,11 +16,17 @@
   доля сожжённого/залоченного LP (`MIN_LP_BURNED_PCT`).
 - **Momentum Trigger**: Buy/Sell Ratio и Volume Velocity в скользящем окне.
 - **Движок выходов**: каскадный TP (+30% / +50%), trailing stop (откат от пика),
-  hard stop-loss (−12%), detектор крупных продаж и падения Buy/Sell Ratio.
+  hard stop-loss (−12%), детектор крупных продаж и падения Buy/Sell Ratio.
 - **Исполнение через Jito**: сборка транзакций (`solders`), Compute Budget,
-  Jito tip, `jitodontfront` (анти-сэндвич), отправка `sendBundle` с проверкой статуса.
-- **Jupiter v6 fallback**: резервный маршрут сборки инструкций, если прямая сборка
-  Pump.fun/Raydium не прошла симуляцию.
+  Jito tip, `jitodontfront` (анти-сэндвич), отправка `sendBundle` с ожиданием
+  подтверждения через `getBundleStatuses` (`JITO_REQUIRE_CONFIRMATION`) —
+  позиция учитывается только после `Landed`.
+- **Jupiter fallback**: резервный маршрут через агрегатор (`/swap-instructions`),
+  используется для AMM-пулов и мигрировавших токенов (прямые инструкции
+  строятся только для bonding curve Pump.fun).
+- **Персистентность позиций**: SQLite (`PORTFOLIO_DB_PATH`, WAL) — открытые
+  позиции переживают рестарт, бот продолжает вести их выходы; dry-run пишет
+  в отдельную БД (`data/bot_dry.db`).
 - **Бэктестер**: прогон исторических CSV через те же фильтры и стратегию.
 
 ## Архитектура
@@ -67,14 +73,24 @@ cp .env.example .env   # заполните HELIUS_API_KEY и кошелёк
 ## Запуск
 
 ```bash
-python main.py                # основной пайплайн
-python main.py --dry-run      # без отправки транзакций (только сигналы)
+python main.py                    # live-пайплайн
+python main.py --dry-run          # без отправки транзакций (бумажное исполнение)
+python main.py --positions 5      # до 5 одновременных позиций
+python main.py --capital 2.0      # лимит капитала, SOL
+python main.py --watchlist MINT1 MINT2   # отслеживать пулы со старта
+python main.py --close-on-stop    # продавать позиции при остановке
+python main.py --status           # показать открытые позиции/сводку из БД и выйти
 ```
+
+Открытые позиции по умолчанию **не** закрываются при остановке и восстанавливаются
+при следующем запуске из SQLite-БД (`PORTFOLIO_DB_PATH`, dry-run — `data/bot_dry.db`;
+пустой `PORTFOLIO_DB_PATH` отключает персистентность).
 
 ## Тесты
 
 ```bash
 pytest -q
+ruff check .
 mypy --config-file pyproject.toml .
 ```
 
