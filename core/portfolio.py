@@ -320,6 +320,54 @@ class PortfolioManager:
         return position
 
     # -------------------------------------------------------------- Обновление
+    def add_to_position(
+        self,
+        base_mint: str,
+        *,
+        added_tokens: float,
+        added_sol: float,
+    ) -> Position | None:
+        """Усредняет позицию: добавляет токены и пересчитывает цену входа.
+
+        Новая цена входа — средневзвешенная: ``(entry_sol + added_sol) /
+        (токены + added_tokens)``. ``initial_token_amount`` растёт вместе с
+        ``token_amount``, чтобы ``remaining_fraction`` оставался согласованным
+        (доля позиции к продаже считается от начального количества).
+
+        Args:
+            base_mint: Mint мемкоина.
+            added_tokens: Добавленное количество токенов (человекочитаемое).
+            added_sol: Потраченный объём, SOL.
+
+        Returns:
+            Обновлённая позиция или ``None``, если позиция не открыта.
+
+        Raises:
+            PortfolioError: Если добавление неположительное.
+        """
+        position = self._positions.get(base_mint)
+        if position is None:
+            return None
+        if added_tokens <= 0 or added_sol <= 0:
+            raise PortfolioError(
+                f"Некорректное усреднение: tokens={added_tokens}, sol={added_sol}"
+            )
+        position.entry_sol += added_sol
+        position.token_amount += added_tokens
+        position.initial_token_amount = position.token_amount
+        position.entry_price = position.entry_sol / position.token_amount
+        self._persist(position)
+        logger.info(
+            "Позиция {} усреднена: +{:.4f} токенов за {:.4f} SOL → "
+            "ср. цена входа {:.9f}, всего {:.4f} токенов",
+            base_mint,
+            added_tokens,
+            added_sol,
+            position.entry_price,
+            position.token_amount,
+        )
+        return position
+
     def mark_price(self, base_mint: str, price: float) -> Position | None:
         """Обновляет зарегистрированный пик цены позиции.
 

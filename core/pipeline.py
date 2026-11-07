@@ -47,7 +47,7 @@ from core.portfolio import PortfolioManager, PortfolioStats
 from core.screening import ScreeningVerdict, TokenScreeningService
 from core.security import TokenSecurityResolver
 from core.trader import MomentumTrader
-from models.trade_data import SignalAction, TradeEvent, TradeSide
+from models.trade_data import PoolInfo, SignalAction, TradeEvent, TradeSide
 from utils.latency import LatencyRegistry
 from utils.logger import get_logger
 from utils.spl import load_keypair
@@ -329,6 +329,9 @@ class LivePipeline:
         if self._dashboard_enabled:
             self._dashboard = DashboardServer(
                 self.dashboard_snapshot,
+                actions=self._dashboard_action,
+                auth_user=settings.dashboard_user,
+                auth_password=settings.dashboard_password,
                 host=settings.dashboard_host,
                 port=settings.dashboard_port,
                 interval_seconds=settings.dashboard_interval_seconds,
@@ -579,6 +582,99 @@ class LivePipeline:
             return True
         pool = self._listener.registry.get(pool_address)
         return pool is None or pool.lp_mint is None
+
+    def _pool_for_mint(
+        self, mint: str
+    ) -> tuple[PoolInfo | None, str | None, str | None]:
+        """Возвращает (pool_info, creator, ошибка) для ручного действия.
+
+        Args:
+            mint: Mint мемкоина.
+
+        Returns:
+            Кортеж: снимок пула, кошелёк создателя, текст ошибки (если есть).
+        """
+        assert self._trader is not None
+        position = self._trader.portfolio.get(mint)
+        if position is None:
+            return None, None, f"позиция {mint} не найдена"
+        if self._listener is None:
+            return None, None, "слушатель недоступен"
+        tracked = self._listener.registry.get(position.pool_address)
+        if tracked is None:
+            return (
+                None,
+                None,
+                (
+                    f"пул {position.pool_address} удалён из реестра — дождитесь "
+                    "события или перезапустите с watchlist"
+                ),
+            )
+        return tracked.to_pool_info(), tracked.creator, None
+
+    async def _dashboard_action(self, payload: dict[str, object]) -> dict[str, object]:
+        """Обрабатывает ручные действия дашборда (кнопки сделок).
+
+        ``sell`` — закрыть позицию целиком; ``average`` — усредниться
+        (докупить ``TRADE_AMOUNT_SOL``); ``sell_all`` — закрыть все позиции
+        подряд. Запись в БД выполняется тем же write-through портфеля:
+        закрытие удаляет строку из ``positions`` и пишет ``closed_trades``,
+        усреднение делает UPSERT позиции — «зависших» строк не появляется.
+
+        Args:
+            payload: ``{action, mint?}``.
+
+        Returns:
+            Словарь результата (``ok`` и детали/ошибка).
+        """
+        action = str(payload.get("action", "")).strip()
+        mint = str(payload.get("mint", "")).strip()
+        if action not in ("sell", "average", "sell_all"):
+            return {"ok": False, "error": f"неизвестное действие: {action or 'пусто'}"}
+
+        trader = self._trader
+        if trader is None:
+            return {"ok": False, "error": "пайплайн не запущен"}
+
+        if action == "sell_all":
+            results: list[dict[str, object]] = []
+            for position in trader.portfolio.all_positions():
+                pool, creator, err = self._pool_for_mint(position.base_mint)
+                if err is not None or pool is None:
+                    results.append(
+                        {
+                            "mint": position.base_mint,
+                            "ok": False,
+                            "error": err or "пул недоступен",
+                        }
+                    )
+                    continue
+                outcome = await trader.manual_sell(
+                    position.base_mint, pool, creator=creator
+                )
+                results.append({"mint": position.base_mint, **outcome})
+            ok_all = bool(results) and all(item["ok"] for item in results)
+            if any(item.get("closed") for item in results):
+                self._pnl_curve.append((time.time(), trader.portfolio.stats.pnl_sol))
+            return {
+                "ok": ok_all,
+                "results": results,
+                "error": None if ok_all else "не все позиции закрыты",
+            }
+
+        # Оставшиеся действия: sell / average (по одному mint).
+        if not mint:
+            return {"ok": False, "error": "не указан mint"}
+        pool, creator, err = self._pool_for_mint(mint)
+        if err is not None or pool is None:
+            return {"ok": False, "error": err or "пул недоступен"}
+        if action == "sell":
+            outcome = await trader.manual_sell(mint, pool, creator=creator)
+        else:
+            outcome = await trader.manual_buy(mint, pool, creator=creator)
+        if outcome.get("ok") and action == "sell":
+            self._pnl_curve.append((time.time(), trader.portfolio.stats.pnl_sol))
+        return outcome
 
     # -------------------------------------------------------------- Внутреннее
     async def _register_watchlist(self) -> None:

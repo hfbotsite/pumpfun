@@ -249,6 +249,13 @@ class Settings(BaseSettings):
     dashboard_interval_seconds: float = Field(
         default=2.0, gt=0, description="Интервал SSE-обновления дашборда, c."
     )
+    dashboard_user: str = Field(
+        default="home", description="Логин веб-дашборда (кнопки ручных сделок!)."
+    )
+    dashboard_password: str = Field(
+        default="123",
+        description="Пароль веб-дашборда; пусто = аутентификация выключена (только 127.0.0.1!).",
+    )
     retry_cooldown_seconds: float = Field(
         default=2.0, ge=0,
         description="Пауза перед повторным входом по пулу после неуспешного ордера, c.",

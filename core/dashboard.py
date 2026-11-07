@@ -20,8 +20,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import secrets
+import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiohttp import web
@@ -33,6 +35,12 @@ logger = get_logger()
 
 #: Провайдер снимка состояния (пайплайн).
 SnapshotProvider = Callable[[], dict[str, Any]]
+
+#: Обработчик ручного действия из дашборда (sell / average / sell_all).
+ActionHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+
+#: Время жизни сессионного токена, c (12 часов).
+SESSION_TTL_SECONDS: float = 12 * 3600
 
 #: HTML-страница дашборда: без сборки, без CDN — всё в одном файле.
 _PAGE: str = """<!doctype html>
@@ -70,7 +78,33 @@ code{color:var(--blue)}
 svg{width:100%;height:90px;display:block}
 ul{margin:6px 0 0;padding-left:18px}
 li{margin:2px 0}
+.btn{border:1px solid var(--line);border-radius:6px;background:#21262d;color:var(--fg);
+padding:4px 10px;font-size:12px;cursor:pointer}
+.btn:hover{background:#2d333b}
+.btn.danger{border-color:var(--red);color:var(--red);font-weight:600;padding:8px 18px;font-size:14px}
+.btn.mini{padding:2px 8px;font-size:11px;margin-right:4px}
+.btn.mini.warn{color:var(--yellow);border-color:var(--yellow)}
+.btn:disabled{opacity:.45;cursor:default}
+#login{position:fixed;inset:0;background:rgba(1,4,9,.92);display:flex;align-items:center;justify-content:center;z-index:10}
+#login .box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:24px 28px;width:280px}
+#login h2{margin:0 0 14px;font-size:16px}
+#login input{width:100%;margin-bottom:10px;padding:8px 10px;background:#0d1117;border:1px solid var(--line);
+border-radius:6px;color:var(--fg);font-size:13px}
+#loginerr{color:var(--red);font-size:12px;min-height:16px}
+#action_status{font-size:12px;color:var(--dim);margin-left:10px}
+.poshead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.poshead h2{margin:0}
+.poshead .spacer{flex:1}
 </style></head><body>
+<div id="login" style="display:none">
+  <div class="box">
+    <h2>Вход в дашборд</h2>
+    <input id="lu" placeholder="логин" autocomplete="username">
+    <input id="lp" type="password" placeholder="пароль" autocomplete="current-password">
+    <div id="loginerr"></div>
+    <button class="btn" style="width:100%" id="loginbtn">Войти</button>
+  </div>
+</div>
 <header>
   <h1>PUMP SCALPER</h1>
   <span class="badge" id="mode">…</span>
@@ -79,6 +113,7 @@ li{margin:2px 0}
   <span class="badge" id="uptime">…</span>
   <span class="badge" id="poscount">…</span>
   <span id="conn">подключение…</span>
+  <span style="margin-left:auto"><button class="btn mini" id="logout">выйти</button></span>
 </header>
 <main class="grid">
   <section class="card"><h2>Сессия</h2><div id="session"></div></section>
@@ -87,7 +122,14 @@ li{margin:2px 0}
     <svg id="chart" viewBox="0 0 300 80" preserveAspectRatio="none"></svg>
     <div class="row"><span class="k">нереализованный</span><span id="unreal">—</span></div>
   </section>
-  <section class="card wide"><h2>Открытые позиции</h2><div id="positions">—</div></section>
+  <section class="card wide"><div class="poshead">
+      <h2>Открытые позиции</h2>
+      <span class="spacer"></span>
+      <span id="action_status"></span>
+      <button class="btn danger" id="sellall">ПРОДАТЬ ВСЁ</button>
+    </div>
+    <div id="positions">—</div>
+  </section>
   <section class="card"><h2>Поток сделок</h2><div id="stream"></div></section>
   <section class="card"><h2>Отбор токенов</h2><div id="screen"></div></section>
   <section class="card"><h2>Латентность (мс, p50 / p95)</h2><div id="latency">—</div></section>
@@ -140,9 +182,10 @@ function render(d){
     <td>${price(p.entry_price)}</td><td>${price(p.current_price)}</td>
     <td class="${cls(p.pnl_pct)}">${sgn(p.pnl_pct,1)}%</td>
     <td>${price(p.peak_price)}</td><td>${dur(p.hold_seconds)}</td>
-    <td>${p.tp1_taken?'✔':'—'}</td></tr>`).join('');
+    <td>${p.tp1_taken?'✔':'—'}</td>
+    <td><button class="btn mini" data-act="sell" data-mint="${esc(p.base_mint)}">✕ закрыть</button><button class="btn mini warn" data-act="average" data-mint="${esc(p.base_mint)}">＋ усреднить</button></td></tr>`).join('');
   $('positions').innerHTML=rows
-    ?`<table><tr><th>mint</th><th>стадия</th><th>вход</th><th>токены</th><th>вход цена</th><th>тек.</th><th>PnL</th><th>пик</th><th>холд</th><th>TP1</th></tr>${rows}</table>`
+    ?`<table><tr><th>mint</th><th>стадия</th><th>вход</th><th>токены</th><th>вход цена</th><th>тек.</th><th>PnL</th><th>пик</th><th>холд</th><th>TP1</th><th>ручное</th></tr>${rows}</table>`
     :'—';
 
   const fl=d.stream||{};
@@ -189,10 +232,83 @@ function drawChart(curve){
    <polyline points="${pts}" fill="none" stroke="${vals[vals.length-1]>=0?'#3fb950':'#f85149'}" stroke-width="1.6"/>`;
 }
 
-const es=new EventSource('/api/stream');
-es.onmessage=e=>{try{render(JSON.parse(e.data))}catch(_){}}
-es.onopen=()=>{$('conn').textContent=''};
-es.onerror=()=>{$('conn').textContent='переподключение…'};
+let TOKEN=localStorage.getItem('dash_token')||'';
+let es=null,busy=false;
+
+function authHeaders(extra={}){return Object.assign({},extra,TOKEN?{'Authorization':'Bearer '+TOKEN}:{})}
+
+async function api(path,opts={}){return fetch(path,Object.assign({},opts,{headers:authHeaders(opts.headers||{})}))}
+
+async function refreshOnce(){try{const r=await api('/api/snapshot');if(r.status===401){showLogin();return}const d=await r.json();render(d)}catch(_){}}
+
+function connect(){
+  if(es)es.close();
+  es=new EventSource('/api/stream'+(TOKEN?('?token='+encodeURIComponent(TOKEN)):''));
+  es.onmessage=e=>{try{render(JSON.parse(e.data))}catch(_){}}
+  es.onopen=()=>{$('conn').textContent=''};
+  es.onerror=()=>{$('conn').textContent='переподключение…';refreshOnce()};
+}
+
+function showLogin(){$('login').style.display='flex'}
+function hideLogin(){$('login').style.display='none';$('loginerr').textContent=''}
+
+$('loginbtn').onclick=async()=>{
+  const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({user:$('lu').value.trim(),password:$('lp').value})});
+  const d=await r.json().catch(()=>({}));
+  if(d.ok&&d.token){TOKEN=d.token;localStorage.setItem('dash_token',TOKEN);hideLogin();connect();refreshOnce()}
+  else{$('loginerr').textContent=d.error||'неверный логин или пароль'}
+};
+$('logout').onclick=()=>{TOKEN='';localStorage.removeItem('dash_token');if(es)es.close();showLogin()};
+
+$('sellall').onclick=async()=>{
+  if(busy)return;
+  if(!confirm('Продать ВСЕ открытые позиции прямо сейчас?'))return;
+  busy=true;$('sellall').disabled=true;$('action_status').textContent='отправка…';
+  try{
+    const r=await api('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'sell_all'})});
+    if(r.status===401){showLogin();return}
+    const d=await r.json();
+    const failed=(d.results||[]).filter(x=>!x.ok);
+    $('action_status').textContent=d.ok
+      ?'все позиции закрыты'
+      :`готово с ошибками: ${failed.map(x=>short(x.mint||'')+' — '+(x.error||'?')).join('; ')}`;
+    if(d.ok)refreshOnce();
+  }catch(e){$('action_status').textContent='ошибка сети'}
+  busy=false;$('sellall').disabled=false;
+};
+
+$('positions').onclick=async e=>{
+  const btn=e.target.closest('button[data-act]');
+  if(!btn||busy)return;
+  const act=btn.dataset.act,mint=btn.dataset.mint;
+  const ask=act==='sell'
+    ?`Закрыть позицию ${short(mint)} (продать все токены по рынку)?`
+    :`Усредниться в ${short(mint)} (докупить объём TRADE_AMOUNT_SOL)?`;
+  if(!confirm(ask))return;
+  busy=true;document.querySelectorAll('button[data-act]').forEach(b=>b.disabled=true);
+  $('action_status').textContent='отправка…';
+  try{
+    const r=await api('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:act,mint})});
+    if(r.status===401){showLogin();return}
+    const d=await r.json();
+    $('action_status').textContent=d.ok
+      ?`${act==='sell'?'позиция закрыта':'позиция усреднена'}: ${short(mint)}`
+      :`ошибка: ${d.error||'неизвестно'}`;
+    if(d.ok)refreshOnce();
+  }catch(err){$('action_status').textContent='ошибка сети'}
+  busy=false;document.querySelectorAll('button[data-act]').forEach(b=>b.disabled=false);
+};
+
+async function boot(){
+  if(!TOKEN){showLogin();return}
+  const r=await api('/api/snapshot');
+  if(r.status===401){TOKEN='';localStorage.removeItem('dash_token');showLogin();return}
+  connect();refreshOnce();
+}
+boot();
 </script></body></html>
 """
 
@@ -213,6 +329,9 @@ class DashboardServer:
         port: int = 8787,
         interval_seconds: float = 2.0,
         log_tail_size: int = 60,
+        actions: ActionHandler | None = None,
+        auth_user: str = "",
+        auth_password: str = "",
     ) -> None:
         """Инициализирует сервер (без сетевых вызовов).
 
@@ -222,6 +341,11 @@ class DashboardServer:
             port: Порт (``0`` — свободный, для тестов).
             interval_seconds: Интервал SSE-пуша, c.
             log_tail_size: Ёмкость кольцевого буфера лога.
+            actions: Обработчик ручных действий (``POST /api/action``);
+                без него действие вернёт 503.
+            auth_user: Логин дашборда; аутентификация включена, только
+                если задан и ``auth_user``, и ``auth_password``.
+            auth_password: Пароль дашборда (из ``DASHBOARD_PASSWORD``).
         """
         self._provider = provider
         self._host = host
@@ -230,6 +354,10 @@ class DashboardServer:
         self._log_tail: deque[str] = deque(maxlen=log_tail_size)
         self._runner: web.AppRunner | None = None
         self._sink_id: int | None = None
+        self._actions = actions
+        self._auth_user = auth_user
+        self._auth_password = auth_password
+        self._tokens: dict[str, float] = {}  # token -> expiry (unix ts)
 
     # --------------------------------------------------------------- Свойства
     @property
@@ -270,13 +398,16 @@ class DashboardServer:
         """Поднимает HTTP-сервер. Порт занятия поднимает OSError."""
         app = web.Application()
         app.router.add_get("/", self._page)
+        app.router.add_post("/api/login", self._login)
         app.router.add_get("/api/snapshot", self._snapshot)
         app.router.add_get("/api/stream", self._stream)
+        app.router.add_post("/api/action", self._action)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._host, self._port)
         await site.start()
-        logger.info("Веб-дашборд: {}", self.url)
+        auth_state = "включена" if self._auth_enabled() else "ВЫКЛЮЧЕНА (пароль не задан)"
+        logger.info("Веб-дашборд: {} (аутентификация {})", self.url, auth_state)
 
     async def close(self) -> None:
         """Останавливает сервер и отсоединяет loguru-sink."""
@@ -289,6 +420,93 @@ class DashboardServer:
         self._runner = None
 
     # ------------------------------------------------------------- Обработчики
+    def _auth_enabled(self) -> bool:
+        """Включена ли аутентификация (оба секрета непустые).
+
+        Returns:
+            ``True``, если логин и пароль заданы в настройках.
+        """
+        return bool(self._auth_user) and bool(self._auth_password)
+
+    def _token_valid(self, token: str) -> bool:
+        """Проверяет сессионный токен на валидность и свежесть.
+
+        Args:
+            token: Токен из заголовка/ query-параметра.
+
+        Returns:
+            ``True``, если токен известен и не истёк.
+        """
+        if not token:
+            return False
+        expiry = self._tokens.get(token)
+        if expiry is None or expiry < time.time():
+            self._tokens.pop(token, None)
+            return False
+        return True
+
+    def _request_token(self, request: web.Request) -> str:
+        """Извлекает токен из заголовка Authorization или query.
+
+        Args:
+            request: HTTP-запрос.
+
+        Returns:
+            Токен (пустая строка, если нет).
+        """
+        header = request.headers.get("Authorization", "")
+        if header.startswith("Bearer "):
+            return header[len("Bearer "):].strip()
+        return str(request.query.get("token", ""))
+
+    def _authorized(self, request: web.Request) -> bool:
+        """Проверяет доступ к защищённому эндпоинту.
+
+        Args:
+            request: HTTP-запрос.
+
+        Returns:
+            ``True``, если аутентификация выключена или токен валиден.
+        """
+        if not self._auth_enabled():
+            return True
+        return self._token_valid(self._request_token(request))
+
+    def _unauthorized(self) -> web.Response:
+        """Стандартный ответ 401.
+
+        Returns:
+            JSON-ответ с ошибкой аутентификации.
+        """
+        return web.json_response(
+            {"ok": False, "error": "требуется вход"}, status=401
+        )
+
+    async def _login(self, request: web.Request) -> web.Response:
+        """``POST /api/login``: выдаёт сессионный токен по логину/паролю.
+
+        Args:
+            request: HTTP-запрос с JSON ``{user, password}``.
+
+        Returns:
+            ``{ok, token}`` или 401.
+        """
+        if not self._auth_enabled():
+            return web.json_response({"ok": True, "token": ""})
+        try:
+            payload = await request.json()
+        except Exception:
+            return self._unauthorized()
+        user = str(payload.get("user", ""))
+        password = str(payload.get("password", ""))
+        if user != self._auth_user or password != self._auth_password:
+            return web.json_response(
+                {"ok": False, "error": "неверный логин или пароль"}, status=401
+            )
+        token = secrets.token_hex(32)
+        self._tokens[token] = time.time() + SESSION_TTL_SECONDS
+        return web.json_response({"ok": True, "token": token})
+
     async def _page(self, request: web.Request) -> web.Response:
         """Отдаёт HTML-страницу дашборда.
 
@@ -301,20 +519,48 @@ class DashboardServer:
         return web.Response(text=_PAGE, content_type="text/html")
 
     async def _snapshot(self, request: web.Request) -> web.Response:
-        """Отдаёт разовый JSON-снимок состояния.
+        """Отдаёт разовый JSON-снимок состояния (требует токен).
 
         Args:
             request: HTTP-запрос.
 
         Returns:
-            JSON-ответ.
+            JSON-ответ или 401.
         """
+        if not self._authorized(request):
+            return self._unauthorized()
         return web.json_response(
             self._provider(), dumps=lambda data: json.dumps(data, ensure_ascii=False)
         )
 
+    async def _action(self, request: web.Request) -> web.Response:
+        """``POST /api/action``: ручное действие (sell/average/sell_all).
+
+        Args:
+            request: HTTP-запрос с JSON ``{action, mint?}``.
+
+        Returns:
+            JSON-результат действия или 401/503.
+        """
+        if not self._authorized(request):
+            return self._unauthorized()
+        if self._actions is None:
+            return web.json_response(
+                {"ok": False, "error": "ручные действия недоступны"}, status=503
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "битый JSON"})
+        if not isinstance(payload, dict):
+            return web.json_response({"ok": False, "error": "битый JSON"})
+        result = await self._actions(payload)
+        return web.json_response(
+            result, dumps=lambda data: json.dumps(data, ensure_ascii=False)
+        )
+
     async def _stream(self, request: web.Request) -> web.StreamResponse:
-        """SSE-поток: пушит снимок каждые ``interval`` секунд.
+        """SSE-поток: пушит снимок каждые ``interval`` секунд (требует токен).
 
         Args:
             request: HTTP-запрос.
@@ -322,6 +568,8 @@ class DashboardServer:
         Returns:
             Потоковый ответ (держится, пока подключён клиент).
         """
+        if not self._authorized(request):
+            return self._unauthorized()
         response = web.StreamResponse(
             headers={
                 "Content-Type": "text/event-stream",

@@ -31,6 +31,7 @@ dry-run и бэктест используют одну и ту же матем�
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -57,11 +58,13 @@ from models.trade_data import (
     SignalAction,
     TokenSecurity,
     TradeEvent,
+    TradeSide,
     TradeSignal,
     clamp_sell_fraction,
 )
 from strategies.base_strategy import BaseStrategy
 from strategies.momentum_pump import MomentumPumpStrategy
+from utils.amm import AmmQuote
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -189,6 +192,7 @@ class MomentumTrader:
         )
         self._capital_sol = capital_sol
         self._blocked_until: dict[str, float] = {}
+        self._position_locks: dict[str, asyncio.Lock] = {}
 
     # --------------------------------------------------------------- Свойства
     @property
@@ -423,55 +427,10 @@ class MomentumTrader:
                 signal=signal,
             )
 
-        try:
-            exit_quote = quote_exit(pool, token_amount=tokens_to_sell)
-            order = build_sell_order(
-                pool, creator=creator, token_amount=tokens_to_sell, quote=exit_quote
-            )
-        except OrderBuildError as exc:
-            return TradeDecision(
-                action=SignalAction.EXIT,
-                reason=f"заявка не собрана: {exc}",
-                signal=signal,
-            )
-
-        result = await self._executor.execute_sell(order)
-        if not result.success:
-            # Лестница выхода: первая попытка с дисконтом не прошла —
-            # повторяем по свежей котировке с нулевым порогом (min_sol_output
-            # = 0), чтобы продажа исполнилась в любом случае. Важно: 0%
-            # проскальзывания в котировке означает «без дисконта», а не
-            # floor=0, поэтому порог обнуляется явно. Повтор только при
-            # заведомо не отправленной транзакции: при неопределённом
-            # статусе (confirmed = False) повтор опасен двойной продажей.
-            try:
-                retry_quote = replace(
-                    quote_exit(pool, token_amount=tokens_to_sell, sell_slippage_pct=0.0),
-                    min_amount_out=0,
-                )
-                retry_order = build_sell_order(
-                    pool,
-                    creator=creator,
-                    token_amount=tokens_to_sell,
-                    quote=retry_quote,
-                )
-            except OrderBuildError as exc:
-                self._block_for(pool.pool_address, event.timestamp)
-                return TradeDecision(
-                    action=SignalAction.EXIT,
-                    reason=f"повторная заявка не собрана: {exc}",
-                    signal=signal,
-                    order=result,
-                )
-            logger.warning(
-                "Лестница выхода {}: первая попытка не прошла ({}), "
-                "повтор с порогом 0",
-                position.base_mint,
-                result.error or "причина неизвестна",
-            )
-            result = await self._executor.execute_sell(retry_order)
-
-        if not result.success or not result.confirmed:
+        result, quote_used = await self._send_sell_with_ladder(
+            pool, tokens_to_sell, creator
+        )
+        if not result.success or not result.confirmed or quote_used is None:
             self._block_for(pool.pool_address, event.timestamp)
             return TradeDecision(
                 action=SignalAction.EXIT,
@@ -484,7 +443,7 @@ class MomentumTrader:
             base_mint=position.base_mint,
             sold_tokens=result.token_amount,
             received_sol=result.sol_amount,
-            exit_price=execution_price(exit_quote, pool.base_decimals),
+            exit_price=execution_price(quote_used, pool.base_decimals),
             sold_at=event.timestamp,
             exit_reason=(signal.exit_reason or ExitReason.MANUAL).value,
         )
@@ -535,6 +494,202 @@ class MomentumTrader:
         if self._retry_cooldown_seconds <= 0:
             return
         self._blocked_until[pool_address] = now + self._retry_cooldown_seconds
+
+    # ------------------------------------------------- Ручные операции (дашборд)
+    def _position_lock(self, base_mint: str) -> asyncio.Lock:
+        """Блокировка позиции: сериализует ручные и автоматические операции.
+
+        Кнопки дашборда обрабатываются в loop'е дашборда параллельно с
+        торговым циклом — без блокировки возможны двойная продажа и
+        двойная запись в портфель/БД.
+
+        Args:
+            base_mint: Mint мемкоина.
+
+        Returns:
+            :class:`asyncio.Lock` для данного mint.
+        """
+        lock = self._position_locks.get(base_mint)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._position_locks[base_mint] = lock
+        return lock
+
+    async def _send_sell_with_ladder(
+        self,
+        pool: PoolInfo,
+        tokens_to_sell: float,
+        creator: str | None,
+    ) -> tuple[OrderResult, AmmQuote | None]:
+        """Собирает и отправляет продажу с лестницей (дисконт → floor 0).
+
+        Общий путь для автоматических выходов и ручной кнопки. Повтор с
+        нулевым порогом выполняется только при заведомо не отправленной
+        транзакции (`success=False`); при неопределённом статусе повтор
+        опасен двойной продажей и не выполняется.
+
+        Args:
+            pool: Снимок пула.
+            tokens_to_sell: Количество токенов к продаже (человекочитаемое).
+            creator: Кошелёк создателя (для прямого маршрута Pump.fun).
+
+        Returns:
+            Кортеж (результат исполнения, котировка фактически
+            использованной попытки; ``None``, если заявка не собралась).
+        """
+        try:
+            quote = quote_exit(pool, token_amount=tokens_to_sell)
+            order = build_sell_order(
+                pool, creator=creator, token_amount=tokens_to_sell, quote=quote
+            )
+        except OrderBuildError as exc:
+            return (
+                OrderResult.failed(
+                    side=TradeSide.SELL,
+                    base_mint=pool.base_mint,
+                    pool_address=pool.pool_address,
+                    error=f"заявка не собрана: {exc}",
+                ),
+                None,
+            )
+        result = await self._executor.execute_sell(order)
+        if result.success:
+            return result, quote
+        try:
+            retry_quote = replace(
+                quote_exit(pool, token_amount=tokens_to_sell, sell_slippage_pct=0.0),
+                min_amount_out=0,
+            )
+            retry_order = build_sell_order(
+                pool,
+                creator=creator,
+                token_amount=tokens_to_sell,
+                quote=retry_quote,
+            )
+        except OrderBuildError as exc:
+            return (
+                OrderResult.failed(
+                    side=TradeSide.SELL,
+                    base_mint=pool.base_mint,
+                    pool_address=pool.pool_address,
+                    error=f"повторная заявка не собрана: {exc}",
+                ),
+                None,
+            )
+        logger.warning(
+            "Лестница выхода {}: первая попытка не прошла ({}), повтор с порогом 0",
+            pool.base_mint,
+            result.error or "причина неизвестна",
+        )
+        result = await self._executor.execute_sell(retry_order)
+        quote_used = retry_quote if result.success else quote
+        return result, quote_used
+
+    async def manual_sell(
+        self,
+        base_mint: str,
+        pool: PoolInfo,
+        *,
+        creator: str | None = None,
+    ) -> dict[str, object]:
+        """Ручная продажа всей позиции (кнопка дашборда «Закрыть»).
+
+        Проходит через тот же исполнитель и лестницу, что и автоматические
+        выходы, и через тот же write-through портфель: полное закрытие
+        атомарно удаляет позицию из БД и пишет запись в ``closed_trades``.
+
+        Args:
+            base_mint: Mint мемкоина.
+            pool: Свежий снимок пула (для котировки).
+            creator: Кошелёк создателя токена.
+
+        Returns:
+            Словарь ``{ok, error?, sol?, tokens?, closed?}``.
+        """
+        async with self._position_lock(base_mint):
+            position = self._portfolio.get(base_mint)
+            if position is None:
+                return {"ok": False, "error": f"позиция {base_mint} не найдена"}
+            if position.pool_address != pool.pool_address:
+                return {"ok": False, "error": "несоответствие пула позиции"}
+            result, quote_used = await self._send_sell_with_ladder(
+                pool, position.token_amount, creator
+            )
+            if not result.success or not result.confirmed or quote_used is None:
+                return {
+                    "ok": False,
+                    "error": result.error or "ордер продажи отклонён",
+                }
+            closed = self._portfolio.apply_sell(
+                base_mint=base_mint,
+                sold_tokens=result.token_amount,
+                received_sol=result.sol_amount,
+                exit_price=execution_price(quote_used, pool.base_decimals),
+                exit_reason="manual",
+            )
+            logger.info(
+                "Ручная продажа {}: {:+.4f} SOL за {:.4f} токенов",
+                base_mint,
+                result.sol_amount,
+                result.token_amount,
+            )
+            return {
+                "ok": True,
+                "sol": result.sol_amount,
+                "tokens": result.token_amount,
+                "closed": closed is not None,
+            }
+
+    async def manual_buy(
+        self,
+        base_mint: str,
+        pool: PoolInfo,
+        *,
+        creator: str | None = None,
+    ) -> dict[str, object]:
+        """Ручное усреднение открытой позиции (кнопка дашборда).
+
+        Покупает ``TRADE_AMOUNT_SOL`` через обычный исполнитель и добавляет
+        результат к позиции средневзвешенной ценой
+        (:meth:`~core.portfolio.PortfolioManager.add_to_position`). Моментум-гейты
+        и фильтры входа не применяются — это осознанное ручное действие.
+
+        Args:
+            base_mint: Mint мемкоина.
+            pool: Свежий снимок пула.
+            creator: Кошелёк создателя токена.
+
+        Returns:
+            Словарь ``{ok, error?, added_tokens?, sol?, entry_price?}``.
+        """
+        async with self._position_lock(base_mint):
+            position = self._portfolio.get(base_mint)
+            if position is None:
+                return {"ok": False, "error": "усреднять можно только открытую позицию"}
+            if position.pool_address != pool.pool_address:
+                return {"ok": False, "error": "несоответствие пула позиции"}
+            try:
+                entry_quote = quote_entry(pool, sol_amount_sol=self._trade_amount_sol)
+                order = build_buy_order(pool, creator=creator, quote=entry_quote)
+            except OrderBuildError as exc:
+                return {"ok": False, "error": f"заявка не собрана: {exc}"}
+            result = await self._executor.execute_buy(order)
+            if not result.success or not result.confirmed:
+                return {
+                    "ok": False,
+                    "error": result.error or "ордер покупки отклонён",
+                }
+            updated = self._portfolio.add_to_position(
+                base_mint,
+                added_tokens=result.token_amount,
+                added_sol=result.sol_amount,
+            )
+            return {
+                "ok": True,
+                "added_tokens": result.token_amount,
+                "sol": result.sol_amount,
+                "entry_price": updated.entry_price if updated else 0.0,
+            }
 
 
 def _dust_tokens(base_decimals: int) -> float:

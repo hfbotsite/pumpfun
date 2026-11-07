@@ -138,3 +138,140 @@ async def test_server_close_is_idempotent() -> None:
     await server.start()
     await server.close()
     await server.close()
+
+
+class TestAuthAndActions:
+    """Аутентификация и ручные действия (кнопки)."""
+
+    async def _start_auth(self) -> tuple[DashboardServer, str, list[dict]]:
+        """Сервер с включённой аутентификацией и записью вызовов действий.
+
+        Returns:
+            Кортеж (сервер, base_url, журнал вызовов /api/action).
+        """
+        calls: list[dict] = []
+
+        async def handler(payload: dict) -> dict:
+            calls.append(payload)
+            return {"ok": True, "echo": payload}
+
+        server = DashboardServer(
+            lambda: {"session": {"mode": "live"}},
+            host="127.0.0.1",
+            port=0,
+            actions=handler,
+            auth_user="home",
+            auth_password="123",
+        )
+        await server.start()
+        sockets = server._runner.addresses
+        base = f"http://127.0.0.1:{sockets[0][1]}"
+        return server, base, calls
+
+    async def test_protected_endpoints_require_token(self) -> None:
+        """Без токена snapshot/stream/action отвечают 401."""
+        server, base, calls = await self._start_auth()
+        try:
+            async with aiohttp.ClientSession() as http:
+                for path in ("/api/snapshot", "/api/stream"):
+                    async with http.get(f"{base}{path}") as resp:
+                        assert resp.status == 401
+                async with http.post(
+                    f"{base}/api/action", json={"action": "sell_all"}
+                ) as resp:
+                    assert resp.status == 401
+            assert calls == []
+        finally:
+            await server.close()
+
+    async def test_login_and_authorized_access(self) -> None:
+        """Верный логин/пароль дают токен; с ним всё доступно."""
+        server, base, calls = await self._start_auth()
+        try:
+            async with aiohttp.ClientSession() as http:
+                bad = await http.post(
+                    f"{base}/api/login",
+                    json={"user": "home", "password": "wrong"},
+                )
+                assert bad.status == 401
+                good = await http.post(
+                    f"{base}/api/login",
+                    json={"user": "home", "password": "123"},
+                )
+                assert good.status == 200
+                token = (await good.json())["token"]
+                headers = {"Authorization": f"Bearer {token}"}
+                async with http.get(
+                    f"{base}/api/snapshot", headers=headers
+                ) as resp:
+                    assert resp.status == 200
+                async with http.post(
+                    f"{base}/api/action",
+                    headers=headers,
+                    json={"action": "sell", "mint": "MintAbc"},
+                ) as resp:
+                    assert resp.status == 200
+                    assert (await resp.json())["ok"] is True
+            assert calls == [{"action": "sell", "mint": "MintAbc"}]
+        finally:
+            await server.close()
+
+    async def test_token_in_query_for_sse(self) -> None:
+        """EventSource не умеет заголовки — токен работает и через query."""
+        server, base, _calls = await self._start_auth()
+        try:
+            async with aiohttp.ClientSession() as http:
+                login = await http.post(
+                    f"{base}/api/login",
+                    json={"user": "home", "password": "123"},
+                )
+                token = (await login.json())["token"]
+                async with http.get(
+                    f"{base}/api/stream?token={token}"
+                ) as resp:
+                    assert resp.status == 200
+                async with http.get(f"{base}/api/stream?token=bad") as resp:
+                    assert resp.status == 401
+        finally:
+            await server.close()
+
+    async def test_action_disabled_returns_503(self) -> None:
+        """Без обработчика действий — 503 (например, --no-dashboard-режимы)."""
+        server = DashboardServer(
+            lambda: {},
+            host="127.0.0.1",
+            port=0,
+        )
+        await server.start()
+        try:
+            base = f"http://127.0.0.1:{server._runner.addresses[0][1]}"
+            async with aiohttp.ClientSession() as http, http.post(
+                f"{base}/api/action", json={"action": "sell_all"}
+            ) as resp:
+                assert resp.status == 503
+        finally:
+            await server.close()
+
+
+class TestDashboardActionHandler:
+    """Обработчик действий пайплайна (без запуска компонентов)."""
+
+    def test_unknown_action(self) -> None:
+        pipeline = LivePipeline(dry_run=True)
+
+        async def run() -> dict:
+            return await pipeline._dashboard_action({"action": "nuke"})
+
+        result = asyncio.run(run())
+        assert result["ok"] is False
+        assert "неизвестное действие" in str(result["error"])
+
+    def test_pipeline_not_started(self) -> None:
+        pipeline = LivePipeline(dry_run=True)
+
+        async def run() -> dict:
+            return await pipeline._dashboard_action({"action": "sell_all"})
+
+        result = asyncio.run(run())
+        assert result["ok"] is False
+        assert "не запущен" in str(result["error"])
