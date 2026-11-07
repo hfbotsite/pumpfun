@@ -27,12 +27,18 @@ Raydium по умолчанию **отключён** (`ENABLED_DEX=pump_fun`); �
   токены вычищаются из реестра пулов и индикаторов.
 - **Momentum Trigger**: Buy/Sell Ratio и Volume Velocity в скользящем окне.
 - **Движок выходов**: каскадный TP (+30% / +50%), trailing stop (откат от пика),
-  hard stop-loss (−12%), детектор крупных продаж и падения Buy/Sell Ratio,
-  таймаут удержания (`MAX_HOLD_SECONDS`).
-- **Исполнение через Jito**: сборка транзакций (`solders`), Compute Budget,
-  Jito tip, `jitodontfront` (анти-сэндвич), отправка `sendBundle` с ожиданием
-  подтверждения через `getBundleStatuses` (`JITO_REQUIRE_CONFIRMATION`) —
-  позиция учитывается только после `Landed`.
+  hard stop-loss (−30%), детектор крупных продаж и падения Buy/Sell Ratio,
+  таймаут удержания (`MAX_HOLD_SECONDS`, по умолчанию 180 c).
+- **Два канала отправки** (`EXECUTION_VENUE`): `rpc` (по умолчанию) — обычная
+  транзакция через Helius без Jito-чаевых, подтверждение через
+  `getSignatureStatuses`; `jito` — бандл с memo `jitodontfront` и чаевыми
+  валидатору, подтверждение через `getBundleStatuses`. В обоих каналах позиция
+  учитывается только после подтверждения (`JITO_REQUIRE_CONFIRMATION`).
+- **Лестница выхода**: первая попытка продажи с дисконтом `SELL_SLIPPAGE_PCT`;
+  если транзакция откатилась по порогу — свежая котировка и повтор с
+  `min_sol_output = 0`, чтобы выход исполнялся в любом случае (повтор только
+  при заведомо неотправленной транзакции; при неопределённом статусе повтор
+  опасен двойной продажей).
 - **Jupiter fallback** (опция, по умолчанию **выключен**): резервный маршрут
   через агрегатор (`/swap-instructions`) для токенов, мигрировавших с bonding
   curve на PumpSwap AMM. Без него бот торгует только токены на кривой; продажа
@@ -113,7 +119,7 @@ pumpfun/
 │   ├── trader.py               # MomentumTrader: событие → решение
 │   ├── orders.py               # quote_entry/exit, build_*, TraderExecutor
 │   ├── tx_builder.py           # инструкции bonding curve, PDA, tip, memo
-│   ├── executor.py             # план свапа → v0-транзакция → Jito
+│   ├── executor.py             # план свапа → v0-транзакция → rpc | Jito
 │   ├── jito.py                 # Block Engine: tip-аккаунты, sendBundle, статусы
 │   ├── jupiter.py              # /quote, /swap-instructions, lookup tables
 │   ├── dry_run.py              # бумажный исполнитель (dry-run/бэктест)
@@ -129,7 +135,7 @@ pumpfun/
 ├── models/trade_data.py        # Pydantic-схемы: Pool, TradeEvent, Signal, Order…
 ├── utils/                      # constants (адреса/дискриминаторы), amm (x·y=k),
 │                               # spl (keypair/ATA/mint), latency, logger (loguru)
-├── tests/                      # pytest: 11 модулей, 123 теста
+├── tests/                      # pytest: 12 модулей, 131 тест
 ├── data/                       # SQLite-БД позиций (создаётся автоматически)
 └── logs/                       # loguru: bot_*.log, errors_*.log (ротация)
 ```
@@ -162,13 +168,17 @@ cp .env.example .env   # заполните HELIUS_API_KEY и кошелёк
 | Переменная | По умолчанию | Смысл |
 |---|---|---|
 | `ENABLED_DEX` | `pump_fun` | Включённые DEX: `pump_fun` и/или `raydium` (неизвестные значения — ошибка старта) |
-| `USE_JUPITER_FALLBACK` | `false` | Запасной маршрут через Jupiter для мигрировавших токенов (см. описание выше) |
+| `EXECUTION_VENUE` | `rpc` | Канал отправки: `rpc` (Helius, без чаевых) или `jito` (бандл + tip) |
+| `USE_JUPITER_FALLBACK` | `false` | Запасной маршрут для мигрировавших токенов; при холдах дольше пары секунд включайте `true` |
 | `MAX_CONCURRENT_POSITIONS` | `3` | Лимит одновременных позиций |
 | `CAPITAL_SOL` | пусто | Лимит свободного капитала, SOL |
 | `PORTFOLIO_DB_PATH` | `data/bot.db` | SQLite-БД позиций (пусто = только память) |
-| `JITO_REQUIRE_CONFIRMATION` | `true` | Ждать `Landed` от Jito перед учётом позиции |
+| `JITO_REQUIRE_CONFIRMATION` | `true` | Ждать подтверждения транзакции/бандла перед учётом позиции |
 | `TRADE_AMOUNT_SOL` | `0.5` | Размер входного ордера |
-| `BUY/SELL_SLIPPAGE_PCT` | `20/25` | Допустимое проскальзывание входа/выхода |
+| `BUY_SLIPPAGE_PCT` | `20` | Допуск проскальзывания входа, % |
+| `SELL_SLIPPAGE_PCT` | `25` | Дисконт первой попытки выхода (вторая — с floor 0, «лестница») |
+| `HARD_STOP_LOSS_PCT` | `30` | Жёсткий стоп-лосс, % от входа |
+| `MAX_HOLD_SECONDS` | `180` | Принудительный выход по таймауту, c |
 | `REQUIRE_MINT/FREEZE_AUTHORITY_NULL`, `MIN_LP_BURNED_PCT` | `true/true/90` | Правила контура отбора (применяются до торговли, см. архитектуру) |
 | `SCREEN_RECHECK_SECONDS` | `600` | TTL вердикта отбора до повторной проверки |
 

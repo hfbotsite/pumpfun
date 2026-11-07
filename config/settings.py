@@ -92,9 +92,18 @@ class Settings(BaseSettings):
         description="Путь к SQLite-БД позиций (пусто = только память).",
     )
 
+    # ------------------------------------------------------------------ Отправка
+    execution_venue: Literal["rpc", "jito"] = Field(
+        default="rpc",
+        description=(
+            "Канал отправки ордеров: rpc — обычная транзакция через RPC "
+            "(Helius, без Jito-чаевых); jito — бандл с чаевыми и защитой от MEV."
+        ),
+    )
+
     # -------------------------------------------------------------------- Jito
     jito_tip_sol: float = Field(
-        default=0.005, ge=0, description="Чаевые Jito валидатору, SOL."
+        default=0.005, ge=0, description="Чаевые Jito валидатору, SOL (venue=jito)."
     )
     jito_block_engine_url: str = Field(
         default="https://frankfurt.mainnet.block-engine.jito.wtf",
@@ -103,13 +112,13 @@ class Settings(BaseSettings):
     jito_region: str = Field(default="frankfurt", description="Метка региона Jito.")
     jito_require_confirmation: bool = Field(
         default=True,
-        description="Считать ордер исполненным только после подтверждения бандла.",
+        description="Считать ордер исполненным только после подтверждения.",
     )
     jito_confirm_timeout_seconds: float = Field(
-        default=10.0, gt=0, description="Таймаут ожидания подтверждения бандла, c."
+        default=10.0, gt=0, description="Таймаут ожидания подтверждения, c (оба venue)."
     )
     jito_confirm_poll_seconds: float = Field(
-        default=0.5, gt=0, description="Интервал опроса статуса бандла, c."
+        default=0.5, gt=0, description="Интервал опроса статуса, c (оба venue)."
     )
 
     # ------------------------------------------------------------ Compute Budget
@@ -153,7 +162,7 @@ class Settings(BaseSettings):
         default=10.0, gt=0, le=100, description="Откат от пика для трейлинг-стопа, %."
     )
     hard_stop_loss_pct: float = Field(
-        default=12.0, gt=0, le=100, description="Жёсткий стоп-лосс, %."
+        default=30.0, gt=0, le=100, description="Жёсткий стоп-лосс, % от входа."
     )
     exit_window_seconds: float = Field(
         default=2.0, gt=0, description="Окно детекта затухания импульса, c."
@@ -165,7 +174,7 @@ class Settings(BaseSettings):
         default=1.0, gt=0, description="Порог крупной продажи, SOL."
     )
     max_hold_seconds: float = Field(
-        default=30.0, gt=0, description="Принудительный выход по таймауту, c."
+        default=180.0, gt=0, description="Принудительный выход по таймауту, c."
     )
 
     # ---------------------------------------------------------- Безопасность
@@ -241,6 +250,21 @@ class Settings(BaseSettings):
         """Приводит уровень логирования к верхнему регистру."""
         if isinstance(value, str):
             return value.strip().upper()
+        return value
+
+    @field_validator("execution_venue", mode="before")
+    @classmethod
+    def _normalize_execution_venue(cls, value: object) -> object:
+        """Приводит канал отправки к нижнему регистру.
+
+        Args:
+            value: Сырое значение (строка).
+
+        Returns:
+            Нормализованное значение или исходное.
+        """
+        if isinstance(value, str):
+            return value.strip().lower()
         return value
 
     @field_validator("enabled_dex", mode="before")

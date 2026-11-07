@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Self
@@ -114,24 +115,32 @@ class _SwapPlan:
     Attributes:
         instructions: Инструкции в порядке исполнения.
         lookup_tables: Address lookup tables (только для маршрута Jupiter).
-        venue: Канал отправки (``jito``/``jupiter``).
+        route: Маршрут свапа (``pump``/``jupiter``).
     """
 
     instructions: list[Instruction] = field(default_factory=list)
     lookup_tables: list[AddressLookupTableAccount] = field(default_factory=list)
-    venue: str = "jito"
+    route: str = "pump"
 
 
 # --------------------------------------------------------------------------- #
 #  Исполнитель
 # --------------------------------------------------------------------------- #
 class OrderExecutor:
-    """Отправляет ордера покупки/продажи как Jito Bundles.
+    """Отправляет ордера через RPC-транзакции либо Jito Bundles.
 
-    Держит ссылку на ключ кошелька, HTTP RPC-клиент (для blockhash), клиент
-    Jito и (опционально) клиент Jupiter. Не владеет жизненным циклом RPC —
-    его останавливает вызывающий код; клиенты Jito/Jupiter закрываются вместе
-    с исполнителем, если были созданы внутри.
+    Канал отправки задаётся настройкой ``EXECUTION_VENUE``:
+
+    * ``rpc`` (по умолчанию) — обычная подписанная транзакция через RPC
+      (Helius), без memo и Jito-чаевых; подтверждение через
+      ``getSignatureStatuses``;
+    * ``jito`` — бандл с memo ``jitodontfront``, Compute Budget и чаевыми
+      валидатору; подтверждение через ``getBundleStatuses``.
+
+    Маршрут свапа (прямые инструкции bonding curve или Jupiter) не зависит
+    от канала отправки. Не владеет жизненным циклом RPC — его останавливает
+    вызывающий код; клиенты Jito/Jupiter закрываются вместе с исполнителем,
+    если были созданы внутри.
     """
 
     def __init__(
@@ -139,6 +148,7 @@ class OrderExecutor:
         rpc: SolanaRpcClient,
         keypair: Keypair,
         *,
+        venue: str | None = None,
         jito: JitoClient | None = None,
         jupiter: JupiterClient | None = None,
         latency: LatencyRegistry | None = None,
@@ -164,8 +174,17 @@ class OrderExecutor:
         self._latency = latency or LatencyRegistry()
         self._submit_stats = self._latency.get("submit")
 
-        self._jito = jito if jito is not None else JitoClient(latency=self._latency)
-        self._owns_jito = jito is None
+        self._venue: str = (
+            (venue or settings.execution_venue).strip().lower()
+        )
+        if self._venue not in ("rpc", "jito"):
+            raise ExecutorError(f"неизвестный канал отправки: {self._venue}")
+
+        self._jito: JitoClient | None = jito
+        self._owns_jito = False
+        if self._jito is None and self._venue == "jito":
+            self._jito = JitoClient(latency=self._latency)
+            self._owns_jito = True
         self._jupiter: JupiterClient | None = jupiter
         self._owns_jupiter = False
         if self._jupiter is None and settings.use_jupiter_fallback:
@@ -193,6 +212,11 @@ class OrderExecutor:
         return str(self._pubkey)
 
     @property
+    def venue(self) -> str:
+        """Канал отправки ордеров (``rpc``/``jito``)."""
+        return self._venue
+
+    @property
     def buy_slippage_pct(self) -> float:
         """Проскальзывание покупки, %."""
         return self._buy_slippage_pct
@@ -204,19 +228,20 @@ class OrderExecutor:
 
     @property
     def tip_lamports(self) -> int:
-        """Размер чаевых Jito, лампорты."""
+        """Размер чаевых Jito, лампорты (venue=jito)."""
         return self._tip_lamports
 
     # ------------------------------------------------------------- Жизненный цикл
     async def start(self) -> None:
         """Открывает сетевые сессии под-клиентов. Идемпотентно."""
-        await self._jito.start()
+        if self._jito is not None:
+            await self._jito.start()
         if self._jupiter is not None:
             await self._jupiter.start()
 
     async def close(self) -> None:
         """Закрывает под-клиенты, созданные исполнителем."""
-        if self._owns_jito:
+        if self._owns_jito and self._jito is not None:
             await self._jito.close()
         if self._owns_jupiter and self._jupiter is not None:
             await self._jupiter.close()
@@ -256,6 +281,7 @@ class OrderExecutor:
                 base_mint=order.pool.base_mint,
                 pool_address=order.pool.pool_address,
                 error=str(exc),
+                venue=self._venue,
             )
         return await self._assemble_and_send(
             plan,
@@ -294,6 +320,7 @@ class OrderExecutor:
                 base_mint=order.pool.base_mint,
                 pool_address=order.pool.pool_address,
                 error=str(exc),
+                venue=self._venue,
             )
         return await self._assemble_and_send(
             plan,
@@ -381,7 +408,7 @@ class OrderExecutor:
             raise ExecutorError(f"Pump.fun buy: {exc}") from exc
         return _SwapPlan(
             instructions=[instruction],
-            venue="jito",
+            route="pump",
         )
 
     def _plan_pump_sell(self, order: SellOrder) -> _SwapPlan:
@@ -411,7 +438,7 @@ class OrderExecutor:
             raise ExecutorError(f"Pump.fun sell: {exc}") from exc
         return _SwapPlan(
             instructions=[instruction],
-            venue="jito",
+            route="pump",
         )
 
     # -------------------------------------------------------- Маршрут Jupiter
@@ -460,7 +487,7 @@ class OrderExecutor:
         return _SwapPlan(
             instructions=swap.core_instructions(),
             lookup_tables=tables,
-            venue="jupiter",
+            route="jupiter",
         )
 
     async def _plan_jupiter_sell(self, order: SellOrder) -> _SwapPlan:
@@ -493,7 +520,7 @@ class OrderExecutor:
         return _SwapPlan(
             instructions=swap.core_instructions(),
             lookup_tables=tables,
-            venue="jupiter",
+            route="jupiter",
         )
 
     # --------------------------------------------------- Сборка и отправка
@@ -528,18 +555,34 @@ class OrderExecutor:
                 base_mint=base_mint,
                 pool_address=pool_address,
                 error="пустой план свапа",
-                venue=plan.venue,
+                venue=self._venue,
             )
 
         started = now_us()
+        landed_slot: int | None = None
+        bundle_id: str | None = None
+        confirmed = True
         try:
             blockhash = await self._rpc.get_latest_blockhash("processed")
-            tip_account = await self._jito.choose_tip_account()
-            instructions = self._compose_instructions(plan.instructions, tip_account)
-            transaction = self._compile_and_sign(
-                instructions, plan.lookup_tables, blockhash
-            )
-            bundle_id = await self._jito.send_bundle([bytes(transaction)])
+            if self._venue == "rpc":
+                instructions = self._compose_instructions(plan.instructions, None)
+                transaction = self._compile_and_sign(
+                    instructions, plan.lookup_tables, blockhash
+                )
+                signature = await self._rpc.send_transaction(
+                    bytes(transaction), skip_preflight=True, max_retries=0
+                )
+            else:
+                assert self._jito is not None
+                tip_account = await self._jito.choose_tip_account()
+                instructions = self._compose_instructions(
+                    plan.instructions, tip_account
+                )
+                transaction = self._compile_and_sign(
+                    instructions, plan.lookup_tables, blockhash
+                )
+                bundle_id = await self._jito.send_bundle([bytes(transaction)])
+                signature = str(transaction.signatures[0])
         except (RpcError, JitoError, ExecutorError, TxBuilderError) as exc:
             logger.warning("Ошибка отправки ордера {}: {}", base_mint, exc)
             return OrderResult.failed(
@@ -547,35 +590,79 @@ class OrderExecutor:
                 base_mint=base_mint,
                 pool_address=pool_address,
                 error=str(exc),
-                venue=plan.venue,
+                venue=self._venue,
             )
 
         elapsed_us = now_us() - started
         self._submit_stats.observe_us(elapsed_us)
-        signature = str(transaction.signatures[0])
+
+        if self._venue == "rpc":
+            if settings.jito_require_confirmation:
+                confirmed, landed_slot, error = await self._await_rpc_confirmation(
+                    signature
+                )
+                if not confirmed:
+                    # Транзакция могла приземлиться после таймаута —
+                    # статус подписи нужно проверить вручную.
+                    logger.critical(
+                        "Транзакция {} НЕ подтверждена ({}): sig={} — "
+                        "проверьте статус вручную, средства могли быть "
+                        "списаны",
+                        base_mint,
+                        error or "таймаут",
+                        signature,
+                    )
+                    return OrderResult.failed(
+                        side=side,
+                        base_mint=base_mint,
+                        pool_address=pool_address,
+                        error=f"транзакция не подтверждена: {error or 'таймаут'}",
+                        venue=self._venue,
+                    )
+            logger.info(
+                "Ордер {} отправлен (rpc): sig={} slot={} ({:.1f} мс)",
+                side.value,
+                signature,
+                landed_slot,
+                elapsed_us / 1000.0,
+            )
+            return OrderResult(
+                success=True,
+                side=side,
+                base_mint=base_mint,
+                pool_address=pool_address,
+                signature=signature,
+                bundle_id=None,
+                sol_amount=sol_amount,
+                token_amount=token_amount,
+                price_impact_pct=price_impact_pct,
+                venue="rpc",
+                confirmed=confirmed,
+                landed_slot=landed_slot,
+                submitted_at=time.time(),
+                latency_ms=elapsed_us / 1000.0,
+            )
+
+        # --- Канал Jito ------------------------------------------------------
+        assert bundle_id is not None
         logger.info(
-            "Ордер {} отправлен ({}): sig={} bundle={} ({:.1f} мс)",
+            "Ордер {} отправлен (jito, {}): sig={} bundle={} ({:.1f} мс)",
             side.value,
-            plan.venue,
+            plan.route,
             signature,
             bundle_id,
             elapsed_us / 1000.0,
         )
-
-        confirmed = True
-        landed_slot: int | None = None
         if settings.jito_require_confirmation:
-            status = await self._jito.await_bundle_confirmation(bundle_id)
+            jito = self._jito
+            assert jito is not None
+            status = await jito.await_bundle_confirmation(bundle_id)
             normalized = status.status.strip().lower()
             if normalized == "landed":
                 landed_slot = status.landed_slot
-                logger.info(
-                    "Бандл {} подтверждён в слоте {}", bundle_id, landed_slot
-                )
+                logger.info("Бандл {} подтверждён в слоте {}", bundle_id, landed_slot)
             else:
                 confirmed = False
-                # Транзакция могла всё же приземлиться после таймаута —
-                # подпись нужно проверить вручную через getSignatureStatuses.
                 logger.critical(
                     "Бандл {} НЕ подтверждён ({}): sig={} — проверьте "
                     "статус подписи вручную, средства могли быть списаны",
@@ -591,7 +678,7 @@ class OrderExecutor:
                         f"бандл не подтверждён: {status.status}"
                         + (f" ({status.error})" if status.error else "")
                     ),
-                    venue=plan.venue,
+                    venue="jito",
                 )
 
         return OrderResult(
@@ -604,7 +691,7 @@ class OrderExecutor:
             sol_amount=sol_amount,
             token_amount=token_amount,
             price_impact_pct=price_impact_pct,
-            venue=plan.venue,
+            venue="jito",
             confirmed=confirmed,
             landed_slot=landed_slot,
             submitted_at=time.time(),
@@ -612,29 +699,79 @@ class OrderExecutor:
         )
 
     def _compose_instructions(
-        self, swap_instructions: list[Instruction], tip_account: str
+        self, swap_instructions: list[Instruction], tip_account: str | None
     ) -> list[Instruction]:
-        """Собирает итоговый список инструкций бандла.
+        """Собирает итоговый список инструкций транзакции.
 
-        Порядок: memo-антифронтран → Compute Budget → свап → чаевые Jito.
-        Memo идёт первым (стандарт Jito ``jitodontfront``), чаевые — последним.
+        Для канала Jito порядок: memo-антифронтран → Compute Budget → свап →
+        чаевые. Для канала ``rpc`` memo и чаевые опускаются — только
+        Compute Budget и свап.
 
         Args:
             swap_instructions: Ядро свапа (без служебных инструкций).
-            tip_account: Аккаунт-получатель чаевых Jito.
+            tip_account: Аккаунт-получатель чаевых Jito (``None`` для rpc).
 
         Returns:
             Полный список инструкций для компиляции.
         """
-        instructions: list[Instruction] = [
-            build_frontrun_memo_instruction(self._pubkey)
-        ]
+        instructions: list[Instruction] = []
+        if tip_account is not None:
+            instructions.append(build_frontrun_memo_instruction(self._pubkey))
         instructions.extend(build_compute_budget_instructions())
         instructions.extend(swap_instructions)
-        instructions.append(
-            build_tip_instruction(self._pubkey, tip_account, self._tip_lamports)
-        )
+        if tip_account is not None:
+            instructions.append(
+                build_tip_instruction(self._pubkey, tip_account, self._tip_lamports)
+            )
         return instructions
+
+    async def _await_rpc_confirmation(
+        self,
+        signature: str,
+        *,
+        timeout_seconds: float | None = None,
+        poll_seconds: float | None = None,
+    ) -> tuple[bool, int | None, str | None]:
+        """Опрашивает статус подписи до подтверждения, отказа или таймаута.
+
+        Подтверждением считается попадание транзакции в блок (любой уровень
+        ``processed``/``confirmed``/``finalized``); ``err`` в статусе —
+        немедленный отказ.
+
+        Args:
+            signature: Подпись отправленной транзакции.
+            timeout_seconds: Общий таймаут, c (по умолчанию из настроек).
+            poll_seconds: Интервал опроса, c (по умолчанию из настроек).
+
+        Returns:
+            Кортеж ``(подтверждена, слот, текст ошибки)``.
+        """
+        timeout = (
+            settings.jito_confirm_timeout_seconds
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+        poll = (
+            settings.jito_confirm_poll_seconds
+            if poll_seconds is None
+            else poll_seconds
+        )
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            try:
+                statuses = await self._rpc.get_signature_statuses([signature])
+                status = statuses[0] if statuses else None
+            except RpcError as exc:
+                status = None
+                logger.debug("Опрос статуса {} не удался: {}", signature, exc)
+            if status is not None:
+                if status.err is not None:
+                    return False, status.slot, str(status.err)
+                if status.confirmation_status:
+                    return True, status.slot, None
+            if time.monotonic() >= deadline:
+                return False, None, None
+            await asyncio.sleep(max(0.05, poll))
 
     def _compile_and_sign(
         self,

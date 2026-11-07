@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from analytics.indicators import StreamingIndicators
 from config.settings import settings
@@ -106,8 +106,12 @@ class TradeDecision:
 
     @property
     def executed(self) -> bool:
-        """Был ли ордер успешно исполнен."""
-        return self.order is not None and self.order.success
+        """Был ли ордер успешно исполнен и подтверждён."""
+        return (
+            self.order is not None
+            and self.order.success
+            and self.order.confirmed
+        )
 
 
 class MomentumTrader:
@@ -427,6 +431,41 @@ class MomentumTrader:
             )
 
         result = await self._executor.execute_sell(order)
+        if not result.success:
+            # Лестница выхода: первая попытка с дисконтом не прошла —
+            # повторяем по свежей котировке с нулевым порогом (min_sol_output
+            # = 0), чтобы продажа исполнилась в любом случае. Важно: 0%
+            # проскальзывания в котировке означает «без дисконта», а не
+            # floor=0, поэтому порог обнуляется явно. Повтор только при
+            # заведомо не отправленной транзакции: при неопределённом
+            # статусе (confirmed = False) повтор опасен двойной продажей.
+            try:
+                retry_quote = replace(
+                    quote_exit(pool, token_amount=tokens_to_sell, sell_slippage_pct=0.0),
+                    min_amount_out=0,
+                )
+                retry_order = build_sell_order(
+                    pool,
+                    creator=creator,
+                    token_amount=tokens_to_sell,
+                    quote=retry_quote,
+                )
+            except OrderBuildError as exc:
+                self._block_for(pool.pool_address, event.timestamp)
+                return TradeDecision(
+                    action=SignalAction.EXIT,
+                    reason=f"повторная заявка не собрана: {exc}",
+                    signal=signal,
+                    order=result,
+                )
+            logger.warning(
+                "Лестница выхода {}: первая попытка не прошла ({}), "
+                "повтор с порогом 0",
+                position.base_mint,
+                result.error or "причина неизвестна",
+            )
+            result = await self._executor.execute_sell(retry_order)
+
         if not result.success or not result.confirmed:
             self._block_for(pool.pool_address, event.timestamp)
             return TradeDecision(

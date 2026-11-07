@@ -119,13 +119,13 @@ class TestEntry:
 
 
 class TestExitHardStop:
-    """Жёсткий стоп-лосс (-12%)."""
+    """Жёсткий стоп-лосс (-30% по умолчанию)."""
 
     def test_price_below_stop_exits_full(self) -> None:
-        """Падение на 13% выводит всю позицию с hard_stop_loss."""
+        """Падение на 30% (порог по умолчанию) выводит всю позицию."""
         strategy = MomentumPumpStrategy()
         position = make_position()
-        metrics = hot_metrics(last_price=position.entry_price * 0.87)
+        metrics = hot_metrics(last_price=position.entry_price * 0.70)
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
         assert signal is not None
         assert signal.exit_reason.value == "hard_stop_loss"
@@ -184,7 +184,7 @@ class TestExitTrailing:
         """Пик не выше входа — трейлинг не активен (это работа hard SL)."""
         strategy = MomentumPumpStrategy()
         position = make_position(entry_price=1.0, peak_price=0.9)
-        metrics = hot_metrics(last_price=0.85)  # -15% → сработает hard SL
+        metrics = hot_metrics(last_price=0.70)  # -30% → сработает hard SL
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
         assert signal.exit_reason.value == "hard_stop_loss"
 
