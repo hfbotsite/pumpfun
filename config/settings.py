@@ -181,7 +181,13 @@ class Settings(BaseSettings):
 
     # ---------------------------------------------------------------- Jupiter
     use_jupiter_fallback: bool = Field(
-        default=True, description="Использовать Jupiter как fallback-маршрут."
+        default=False,
+        description=(
+            "Jupiter fallback: запасной маршрут продажи/покупки через агрегатор "
+            "для токенов, мигрировавших с bonding curve на AMM. "
+            "false = торговать только токены на bonding curve; продажа позиции, "
+            "в которой токен мигрировал, будет завершаться ошибкой."
+        ),
     )
     jupiter_api_url: str = Field(
         default="https://lite-api.jup.ag/swap/v1",

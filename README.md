@@ -31,9 +31,11 @@ Raydium по умолчанию **отключён** (`ENABLED_DEX=pump_fun`); �
   Jito tip, `jitodontfront` (анти-сэндвич), отправка `sendBundle` с ожиданием
   подтверждения через `getBundleStatuses` (`JITO_REQUIRE_CONFIRMATION`) —
   позиция учитывается только после `Landed`.
-- **Jupiter fallback**: резервный маршрут через агрегатор (`/swap-instructions`),
-  используется для AMM-пулов и мигрировавших токенов (прямые инструкции
-  строятся только для bonding curve Pump.fun).
+- **Jupiter fallback** (опция, по умолчанию **выключен**): резервный маршрут
+  через агрегатор (`/swap-instructions`) для токенов, мигрировавших с bonding
+  curve на PumpSwap AMM. Без него бот торгует только токены на кривой; продажа
+  позиции, в которой токен успел мигрировать, завершится ошибкой — включайте
+  `USE_JUPITER_FALLBACK=true` для live-торговли с удержанием позиций.
 - **Персистентность позиций**: SQLite (`PORTFOLIO_DB_PATH`, WAL, write-through) —
   открытые позиции переживают рестарт, бот продолжает вести их выходы; dry-run
   пишет в отдельную БД (`data/bot_dry.db`).
@@ -148,12 +150,14 @@ cp .env.example .env   # заполните HELIUS_API_KEY и кошелёк
 | Переменная | По умолчанию | Смысл |
 |---|---|---|
 | `ENABLED_DEX` | `pump_fun` | Включённые DEX: `pump_fun` и/или `raydium` (неизвестные значения — ошибка старта) |
+| `USE_JUPITER_FALLBACK` | `false` | Запасной маршрут через Jupiter для мигрировавших токенов (см. описание выше) |
 | `MAX_CONCURRENT_POSITIONS` | `3` | Лимит одновременных позиций |
 | `CAPITAL_SOL` | пусто | Лимит свободного капитала, SOL |
 | `PORTFOLIO_DB_PATH` | `data/bot.db` | SQLite-БД позиций (пусто = только память) |
 | `JITO_REQUIRE_CONFIRMATION` | `true` | Ждать `Landed` от Jito перед учётом позиции |
 | `TRADE_AMOUNT_SOL` | `0.5` | Размер входного ордера |
 | `BUY/SELL_SLIPPAGE_PCT` | `20/25` | Допустимое проскальзывание входа/выхода |
+| `REQUIRE_MINT/FREEZE_AUTHORITY_NULL`, `MIN_LP_BURNED_PCT` | `true/true/90` | Правила отбора токена перед входом (см. раздел Security-контур) |
 
 Полный список — в [.env.example](.env.example) и `config/settings.py`.
 
