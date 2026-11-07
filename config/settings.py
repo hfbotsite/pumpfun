@@ -24,9 +24,17 @@ LAMPORTS_PER_SOL: int = 1_000_000_000
 #: Допустимые сети Solana.
 SolanaNetwork = Literal["mainnet-beta", "devnet", "testnet"]
 
-#: Шаблоны HTTP/WS endpoint-ов Helius по сети.
-_HELIUS_HTTP_TEMPLATE = "https://{net}.helius-rpc.com/?api-key={key}"
-_HELIUS_WS_TEMPLATE = "wss://{net}.helius-rpc.com/?api-key={key}"
+#: Шаблоны HTTP/WS endpoint-ов Helius по сети. Поддомен определяет кластер:
+#: для mainnet-beta это "mainnet" (mainnet-beta.helius-rpc.com НЕ существует).
+_HELIUS_HTTP_TEMPLATE = "https://{sub}.helius-rpc.com/?api-key={key}"
+_HELIUS_WS_TEMPLATE = "wss://{sub}.helius-rpc.com/?api-key={key}"
+
+#: Поддомен Helius для каждой сети.
+_HELIUS_SUBDOMAINS: dict[str, str] = {
+    "mainnet-beta": "mainnet",
+    "devnet": "devnet",
+    "testnet": "testnet",
+}
 
 
 class Settings(BaseSettings):
@@ -357,9 +365,8 @@ class Settings(BaseSettings):
         """Итоговый HTTP RPC endpoint (переопределение или Helius)."""
         if self.rpc_http_url.strip():
             return self.rpc_http_url.strip()
-        return _HELIUS_HTTP_TEMPLATE.format(
-            net=self.solana_network, key=self.helius_api_key
-        )
+        sub = _HELIUS_SUBDOMAINS.get(self.solana_network, "mainnet")
+        return _HELIUS_HTTP_TEMPLATE.format(sub=sub, key=self.helius_api_key)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -367,9 +374,8 @@ class Settings(BaseSettings):
         """Итоговый WebSocket RPC endpoint (переопределение или Helius)."""
         if self.rpc_ws_url.strip():
             return self.rpc_ws_url.strip()
-        return _HELIUS_WS_TEMPLATE.format(
-            net=self.solana_network, key=self.helius_api_key
-        )
+        sub = _HELIUS_SUBDOMAINS.get(self.solana_network, "mainnet")
+        return _HELIUS_WS_TEMPLATE.format(sub=sub, key=self.helius_api_key)
 
     # ------------------------------------------------------------------ Хелперы
     def sol_to_lamports(self, amount_sol: float) -> int:

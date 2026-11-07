@@ -67,7 +67,7 @@ from models.trade_data import (
     TradeEvent,
     TradeSide,
 )
-from utils.constants import PUMP_TOKEN_DECIMALS, SOL_DECIMALS
+from utils.constants import PUBLIC_MAINNET_RPC, PUMP_TOKEN_DECIMALS, SOL_DECIMALS
 from utils.latency import LatencyRegistry
 from utils.logger import get_logger
 from utils.spl import load_keypair
@@ -938,62 +938,93 @@ class LivePipeline:
         except Exception as exc:
             return {"ok": False, "error": f"не удалось вывести bonding curve: {exc}"}
         limit = min(1000, max(50, int(payload.get("max_tx", 500))))
-        signatures = await rpc.get_signatures_for_address(curve_address, limit=limit)
-        # Параллельная загрузка: 500 транзакций последовательно = минуты.
-        semaphore = asyncio.Semaphore(8)
+        fallback_client: SolanaRpcClient | None = None
+        try:
+            try:
+                signatures = await rpc.get_signatures_for_address(
+                    curve_address, limit=limit
+                )
+            except RpcError as exc:
+                # Helius недоступен/не настроен — пробуем публичный Solana RPC
+                # (работает без ключа, но с жёсткими rate limits).
+                logger.warning(
+                    "Helius RPC не ответил ({}), переключаюсь на публичный RPC",
+                    exc,
+                )
+                fallback_client = SolanaRpcClient(http_url=PUBLIC_MAINNET_RPC)
+                await fallback_client.start()
+                rpc = fallback_client
+                signatures = await rpc.get_signatures_for_address(
+                    curve_address, limit=limit
+                )
 
-        async def _fetch(info: dict[str, Any]) -> dict[str, Any] | None:
-            async with semaphore:
-                try:
-                    return await rpc.get_transaction(str(info.get("signature", "")))
-                except RpcError as exc:
-                    logger.debug("getTransaction не удался: {}", exc)
-                    return None
+            # Параллельная загрузка: 500 транзакций последовательно = минуты.
+            semaphore = asyncio.Semaphore(8)
 
-        transactions = await asyncio.gather(*(_fetch(info) for info in signatures))
-        entries: list[tuple[float, str, PumpTradeEvent]] = []
-        for info, tx in zip(signatures, transactions, strict=True):
-            if not tx:
-                continue
-            signature = str(info.get("signature", ""))
-            logs = (tx.get("meta") or {}).get("logMessages") or []
-            block_time = float(tx.get("blockTime") or 0)
-            for parsed in extract_pump_trade_events(logs):
-                entries.append((block_time, signature, parsed))
-        if len(entries) < 5:
-            return {
-                "ok": False,
-                "error": (
-                    f"мало событий на кривой: {len(entries)} < 5 "
-                    "(токен мог мигрировать на AMM — нужен Jupiter-режим)"
-                ),
-            }
-        entries.sort(key=lambda item: item[0])
-        first_time, _first_sig, first_parsed = entries[0]
-        events = [
-            TradeEvent(
-                signature=signature,
-                pool_address=curve_address,
-                base_mint=mint,
-                dex=DEXType.PUMP_FUN,
-                side=TradeSide.BUY if parsed.is_buy else TradeSide.SELL,
-                sol_amount=parsed.sol_amount / 10**SOL_DECIMALS,
-                token_amount=parsed.token_amount / float(10**PUMP_TOKEN_DECIMALS),
-                wallet=parsed.user,
-                timestamp=block_time if block_time > 0 else first_time + index * 0.001,
+            async def _fetch(info: dict[str, Any]) -> dict[str, Any] | None:
+                async with semaphore:
+                    try:
+                        return await rpc.get_transaction(
+                            str(info.get("signature", ""))
+                        )
+                    except RpcError as tx_exc:
+                        logger.debug("getTransaction не удался: {}", tx_exc)
+                        return None
+
+            transactions = await asyncio.gather(
+                *(_fetch(info) for info in signatures)
             )
-            for index, (block_time, signature, parsed) in enumerate(entries[1:], start=1)
-        ]
-        return await self._backtest_events(
-            events,
-            quote_reserve=first_parsed.virtual_sol_reserves,
-            base_reserve=first_parsed.virtual_token_reserves,
-            creator=first_parsed.user,
-            trade_amount_sol=trade_amount_sol,
-            entry_window=entry_window,
-            exit_window=exit_window,
-            max_positions=max_positions,
-        )
+            entries: list[tuple[float, str, PumpTradeEvent]] = []
+            for info, tx in zip(signatures, transactions, strict=True):
+                if not tx:
+                    continue
+                signature = str(info.get("signature", ""))
+                logs = (tx.get("meta") or {}).get("logMessages") or []
+                block_time = float(tx.get("blockTime") or 0)
+                for parsed in extract_pump_trade_events(logs):
+                    entries.append((block_time, signature, parsed))
+            if len(entries) < 5:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"мало событий на кривой: {len(entries)} < 5 "
+                        "(токен мог мигрировать на AMM — нужен Jupiter-режим)"
+                    ),
+                }
+            entries.sort(key=lambda item: item[0])
+            first_time, _first_sig, first_parsed = entries[0]
+            events = [
+                TradeEvent(
+                    signature=signature,
+                    pool_address=curve_address,
+                    base_mint=mint,
+                    dex=DEXType.PUMP_FUN,
+                    side=TradeSide.BUY if parsed.is_buy else TradeSide.SELL,
+                    sol_amount=parsed.sol_amount / 10**SOL_DECIMALS,
+                    token_amount=parsed.token_amount
+                    / float(10**PUMP_TOKEN_DECIMALS),
+                    wallet=parsed.user,
+                    timestamp=block_time
+                    if block_time > 0
+                    else first_time + index * 0.001,
+                )
+                for index, (block_time, signature, parsed) in enumerate(
+                    entries[1:], start=1
+                )
+            ]
+            return await self._backtest_events(
+                events,
+                quote_reserve=first_parsed.virtual_sol_reserves,
+                base_reserve=first_parsed.virtual_token_reserves,
+                creator=first_parsed.user,
+                trade_amount_sol=trade_amount_sol,
+                entry_window=entry_window,
+                exit_window=exit_window,
+                max_positions=max_positions,
+            )
+        finally:
+            if fallback_client is not None:
+                await fallback_client.close()
 
     # -------------------------------------------------------------- Внутреннее
     async def _register_watchlist(self) -> None:

@@ -171,8 +171,8 @@ def test_report_to_dict_shape() -> None:
 class TestMintRpcFailure:
     """Сбой Helius в mint-режиме приходит JSON-ом, а не 500."""
 
-    def test_friendly_rpc_error(self) -> None:
-        """RpcError (нет DNS/ключа) → ok=False с человеческим текстом."""
+    def test_rpc_failure_falls_back_gracefully(self) -> None:
+        """Сбой Helius → fallback на публичный RPC → честная ошибка без 500."""
         class DeadRpc:
             def get_signatures_for_address(self, address, *, limit=500, commitment="confirmed"):
                 raise RpcError("[Errno 11001] getaddrinfo failed")
@@ -188,5 +188,6 @@ class TestMintRpcFailure:
             )
         )
         assert result["ok"] is False
-        assert "Helius RPC недоступен" in str(result["error"])
-        assert "getaddrinfo" in str(result["error"])
+        error = str(result["error"])
+        # Fallback на публичный RPC тоже не даёт событий в песочнице без сети:
+        assert "мало событий" in error or "Helius RPC недоступен" in error

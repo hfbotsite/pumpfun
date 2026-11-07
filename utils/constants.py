@@ -131,6 +131,10 @@ BPS_DENOMINATOR: int = 10_000
 #: оценка для свежих токенов.
 PUMP_AMM_FEE_BPS: int = 125
 
+#: Публичный Solana RPC (без ключа; жёсткие rate limits) — запасной
+#: источник истории для бэктеста, если Helius недоступен.
+PUBLIC_MAINNET_RPC: str = "https://api.mainnet-beta.solana.com"
+
 #: Виртуальная база SOL в bonding curve Pump.fun: виртуальный резерв =
 #: реальные резервы + 30 SOL (реальные начинаются с нуля).
 PUMP_FUN_VIRTUAL_SOL_BASE: float = 30.0
