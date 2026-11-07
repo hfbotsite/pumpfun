@@ -73,7 +73,7 @@ th{color:var(--dim);font-weight:500}
 .pos{color:var(--green)}.neg{color:var(--red)}.warn{color:var(--yellow)}
 .bar{height:8px;background:#21262d;border-radius:4px;overflow:hidden;margin:2px 0 8px}
 .bar>i{display:block;height:100%}
-pre{margin:0;max-height:260px;overflow:auto;font:12px/1.5 Consolas,monospace;white-space:pre-wrap}
+pre{margin:0;max-height:460px;overflow:auto;font:12px/1.5 Consolas,monospace;white-space:pre-wrap}
 code{color:var(--blue)}
 svg{width:100%;height:90px;display:block}
 ul{margin:6px 0 0;padding-left:18px}
@@ -328,7 +328,7 @@ class DashboardServer:
         host: str = "127.0.0.1",
         port: int = 8787,
         interval_seconds: float = 2.0,
-        log_tail_size: int = 60,
+        log_tail_size: int = 200,
         actions: ActionHandler | None = None,
         auth_user: str = "",
         auth_password: str = "",
@@ -370,7 +370,7 @@ class DashboardServer:
                 port = sockets[0][1]
         return f"http://{self._host}:{port}"
 
-    def log_tail(self, limit: int = 30) -> list[str]:
+    def log_tail(self, limit: int = 200) -> list[str]:
         """Возвращает последние строки лога для страницы.
 
         Args:
