@@ -29,7 +29,7 @@ from pathlib import Path
 
 from config.settings import settings
 from core.persistence import PortfolioStore
-from core.pipeline import DRY_RUN_DB_PATH, LivePipeline
+from core.pipeline import LivePipeline
 from models.trade_data import Position
 from utils.logger import get_logger, setup_logger
 
@@ -124,7 +124,7 @@ def _resolve_db_path(args: argparse.Namespace) -> str:
     if explicit:
         return str(explicit)
     if args.dry_run:
-        return DRY_RUN_DB_PATH
+        return str(settings.portfolio_dry_db_path)
     return str(settings.portfolio_db_path)
 
 

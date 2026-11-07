@@ -56,12 +56,6 @@ logger = get_logger()
 #: Таймаут ожидания события из очереди перед обслуживанием пайплайна, c.
 QUEUE_POLL_TIMEOUT: float = 1.0
 
-#: Возраст «молчания» пула, после которого он удаляется из реестра, c.
-STALE_POOL_SECONDS: float = 600.0
-
-#: Отдельная БД для dry-run, чтобы бумажные позиции не смешивались с боевыми.
-DRY_RUN_DB_PATH: str = "data/bot_dry.db"
-
 
 class PipelineError(RuntimeError):
     """Ошибка запуска или работы пайплайна."""
@@ -122,7 +116,7 @@ class LivePipeline:
         max_concurrent_positions: int | None = None,
         capital_sol: float | None = None,
         close_positions_on_stop: bool = False,
-        maintenance_interval_seconds: float = 60.0,
+        maintenance_interval_seconds: float | None = None,
         db_path: str | None = None,
     ) -> None:
         """Инициализирует пайплайн (без сетевых вызовов).
@@ -137,7 +131,7 @@ class LivePipeline:
             close_positions_on_stop: Принудительно продавать позиции при
                 завершении работы.
             maintenance_interval_seconds: Интервал обслуживания (очистка
-                «молчащих» пулов, сводка в лог), c.
+                «молчащих» пулов, сводка в лог), c (``None`` — из настроек).
             db_path: Путь к SQLite-БД позиций (``None`` — из настроек;
                 dry-run по умолчанию пишет в отдельный файл).
         """
@@ -153,11 +147,16 @@ class LivePipeline:
             settings.capital_sol if capital_sol is None else capital_sol
         )
         self._close_positions_on_stop = close_positions_on_stop
-        self._maintenance_interval = max(5.0, maintenance_interval_seconds)
+        self._maintenance_interval = max(
+            5.0,
+            settings.maintenance_interval_seconds
+            if maintenance_interval_seconds is None
+            else maintenance_interval_seconds,
+        )
         if db_path is not None:
             self._db_path = db_path
         elif dry_run:
-            self._db_path = DRY_RUN_DB_PATH
+            self._db_path = settings.portfolio_dry_db_path
         else:
             self._db_path = settings.portfolio_db_path
 
@@ -461,7 +460,7 @@ class LivePipeline:
             return
         self._last_maintenance = now
 
-        pruned = self.listener.registry.prune_stale(STALE_POOL_SECONDS)
+        pruned = self.listener.registry.prune_stale(settings.stale_pool_seconds)
         for pool_address in pruned:
             self.trader.forget_pool(pool_address)
         if pruned:

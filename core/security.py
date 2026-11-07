@@ -25,6 +25,7 @@ import time
 
 from solders.pubkey import Pubkey
 
+from config.settings import settings
 from core.client import AccountState, RpcError, SolanaRpcClient
 from models.trade_data import DEXType, PoolInfo, TokenSecurity
 from utils.constants import LP_BURN_ADDRESSES
@@ -32,9 +33,6 @@ from utils.logger import get_logger
 from utils.spl import SplError, decode_mint
 
 logger = get_logger()
-
-#: Время жизни записи кэша безопасности, c.
-DEFAULT_SECURITY_TTL_SECONDS: float = 30.0
 
 #: Смещение поля ``amount`` в SPL Token-аккаунте.
 _TOKEN_AMOUNT_OFFSET: int = 64
@@ -58,16 +56,18 @@ class TokenSecurityResolver:
         self,
         rpc: SolanaRpcClient,
         *,
-        ttl_seconds: float = DEFAULT_SECURITY_TTL_SECONDS,
+        ttl_seconds: float | None = None,
     ) -> None:
         """Инициализирует резолвер.
 
         Args:
             rpc: HTTP RPC-клиент.
-            ttl_seconds: Время жизни записи кэша, c.
+            ttl_seconds: Время жизни записи кэша, c (``None`` — из настроек).
         """
         self._rpc = rpc
-        self._ttl = ttl_seconds
+        self._ttl = (
+            settings.security_ttl_seconds if ttl_seconds is None else ttl_seconds
+        )
         self._cache: dict[str, tuple[TokenSecurity, float]] = {}
 
     # --------------------------------------------------------------- Публичное

@@ -132,7 +132,7 @@ class MomentumTrader:
         trade_amount_sol: float | None = None,
         entry_window_seconds: float | None = None,
         exit_window_seconds: float | None = None,
-        retry_cooldown_seconds: float = 2.0,
+        retry_cooldown_seconds: float | None = None,
         capital_sol: float | None = None,
     ) -> None:
         """Инициализирует движок решений.
@@ -148,7 +148,7 @@ class MomentumTrader:
             entry_window_seconds: Окно анализа входа, c.
             exit_window_seconds: Окно анализа выхода, c.
             retry_cooldown_seconds: Пауза перед повторной попыткой входа по
-                пулу после неуспешного ордера, c.
+                пулу после неуспешного ордера, c (``None`` — из настроек).
             capital_sol: Ограничение свободного капитала, SOL (``None`` — без
                 ограничения).
         """
@@ -181,7 +181,12 @@ class MomentumTrader:
                 max(self._entry_window_seconds, self._exit_window_seconds)
             )
 
-        self._retry_cooldown_seconds = max(0.0, retry_cooldown_seconds)
+        self._retry_cooldown_seconds = max(
+            0.0,
+            settings.retry_cooldown_seconds
+            if retry_cooldown_seconds is None
+            else retry_cooldown_seconds,
+        )
         self._capital_sol = capital_sol
         self._blocked_until: dict[str, float] = {}
 

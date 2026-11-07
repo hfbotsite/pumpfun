@@ -219,6 +219,17 @@ class TestDefaults:
         assert Settings.model_fields["execution_venue"].default == "rpc"
         assert Settings.model_fields["use_jupiter_fallback"].default is False
 
+    def test_operations_defaults(self) -> None:
+        """Поведенческие значения выведены в конфиг (не захардкожены)."""
+        assert Settings.model_fields["retry_cooldown_seconds"].default == 2.0
+        assert Settings.model_fields["maintenance_interval_seconds"].default == 60.0
+        assert Settings.model_fields["stale_pool_seconds"].default == 600.0
+        assert Settings.model_fields["security_ttl_seconds"].default == 30.0
+        assert (
+            Settings.model_fields["portfolio_dry_db_path"].default
+            == "data/bot_dry.db"
+        )
+
     def test_venue_normalization(self) -> None:
         """Канал отправки нормализует регистр."""
         settings = Settings(execution_venue=" JITO ")

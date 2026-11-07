@@ -91,6 +91,10 @@ class Settings(BaseSettings):
         default="data/bot.db",
         description="Путь к SQLite-БД позиций (пусто = только память).",
     )
+    portfolio_dry_db_path: str = Field(
+        default="data/bot_dry.db",
+        description="SQLite-БД позиций для dry-run (чтобы не смешивать с боевыми).",
+    )
 
     # ------------------------------------------------------------------ Отправка
     execution_venue: Literal["rpc", "jito"] = Field(
@@ -178,6 +182,10 @@ class Settings(BaseSettings):
     )
 
     # ---------------------------------------------------------- Безопасность
+    security_ttl_seconds: float = Field(
+        default=30.0, gt=0,
+        description="TTL кэша данных безопасности токена в RPC-резолвере, c.",
+    )
     require_mint_authority_null: bool = Field(
         default=True, description="Требовать mint authority == None."
     )
@@ -213,6 +221,20 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------- Логирование
     log_level: str = Field(default="INFO", description="Уровень логирования.")
     log_dir: str = Field(default="logs", description="Каталог логов loguru.")
+
+    # ------------------------------------------------------ Обслуживание пайплайна
+    retry_cooldown_seconds: float = Field(
+        default=2.0, ge=0,
+        description="Пауза перед повторным входом по пулу после неуспешного ордера, c.",
+    )
+    maintenance_interval_seconds: float = Field(
+        default=60.0, gt=0,
+        description="Интервал обслуживания пайплайна (чистка пулов, сводка), c.",
+    )
+    stale_pool_seconds: float = Field(
+        default=600.0, gt=0,
+        description="Возраст «молчания» пула, после которого он удаляется из реестра, c.",
+    )
 
     # ----------------------------------------------------------------- Транспорт
     rpc_timeout_seconds: float = Field(
