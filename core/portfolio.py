@@ -91,7 +91,6 @@ class PortfolioStats:
     losses: int = 0
     invested_sol: float = 0.0
     returned_sol: float = 0.0
-    peak_unrealized_sol: float = 0.0
     hold_seconds_total: float = 0.0
 
     @property

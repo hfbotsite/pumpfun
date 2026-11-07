@@ -128,7 +128,6 @@ class JupiterSwapInstructions:
     swap_instruction: Instruction | None = None
     cleanup_instruction: Instruction | None = None
     other_instructions: list[Instruction] = field(default_factory=list)
-    compute_budget_instructions: list[Instruction] = field(default_factory=list)
     address_lookup_table_addresses: list[str] = field(default_factory=list)
 
     def core_instructions(self) -> list[Instruction]:
@@ -483,9 +482,6 @@ def _parse_swap_instructions(payload: dict[str, Any]) -> JupiterSwapInstructions
             payload.get("cleanupInstruction")
         ),
         other_instructions=_parse_instruction_list(payload.get("otherInstructions")),
-        compute_budget_instructions=_parse_instruction_list(
-            payload.get("computeBudgetInstructions")
-        ),
         address_lookup_table_addresses=[
             str(addr) for addr in table_addresses if isinstance(addr, str)
         ],

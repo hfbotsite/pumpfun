@@ -228,11 +228,6 @@ class StreamingIndicators:
         """Глубина окна каждого пула, c."""
         return self._max_window_seconds
 
-    @property
-    def tracked_pools(self) -> int:
-        """Число пулов, по которым есть окна."""
-        return len(self._windows)
-
     def window(self, pool_address: str) -> RollingTradeWindow | None:
         """Возвращает окно пула.
 

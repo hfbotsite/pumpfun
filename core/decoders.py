@@ -148,13 +148,6 @@ class BondingCurveState:
     complete: bool
     creator: str
 
-    @property
-    def price_lamports_per_token(self) -> float:
-        """Спот-цена в лампортах за один base unit токена."""
-        if self.virtual_token_reserves <= 0:
-            return 0.0
-        return self.virtual_sol_reserves / self.virtual_token_reserves
-
 
 def decode_bonding_curve(data: bytes) -> BondingCurveState | None:
     """Разбирает аккаунт bonding curve Pump.fun.

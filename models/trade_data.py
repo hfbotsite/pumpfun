@@ -86,12 +86,6 @@ class PoolInfo(BaseModel):
         """Текущая ликвидность пула в SOL."""
         return self.quote_reserve / LAMPORTS_PER_SOL
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def base_ui_amount(self) -> float:
-        """Количество base-токенов в человекочитаемом виде."""
-        return self.base_reserve / float(10**self.base_decimals)
-
     def price_sol_per_token(self) -> float:
         """Спот-цена одного base-токена в SOL.
 
@@ -240,12 +234,6 @@ class MomentumMetrics(BaseModel):
         """Суммарный объём покупок в окне (SOL) — «скорость объёма»."""
         return self.buy_volume_sol
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def net_flow_sol(self) -> float:
-        """Нетто-поток: покупки минус продажи, SOL."""
-        return self.buy_volume_sol - self.sell_volume_sol
-
 
 # --------------------------------------------------------------------------- #
 #  Сигнал
@@ -347,16 +335,6 @@ class OrderResult(BaseModel):
 # --------------------------------------------------------------------------- #
 #  Jito
 # --------------------------------------------------------------------------- #
-class JitoBundle(BaseModel):
-    """Описание отправленного Jito-бандла."""
-
-    bundle_id: str | None = Field(default=None, description="ID бандла (SHA-256 подписей).")
-    transaction_signatures: list[str] = Field(
-        default_factory=list, description="Подписи транзакций бандла."
-    )
-    tip_lamports: int = Field(default=0, ge=0, description="Чаевые в лампортах.")
-
-
 class JitoBundleStatus(BaseModel):
     """Статус Jito-бандла."""
 

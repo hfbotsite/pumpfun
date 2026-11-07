@@ -28,7 +28,6 @@ from solders.pubkey import Pubkey
 
 from config.settings import settings
 from utils.constants import (
-    ASSOCIATED_TOKEN_PROGRAM_ID,
     JITO_FRONTRUN_MEMO,
     MEMO_PROGRAM_ID,
     PUMP_BONDING_CURVE_SEED,
@@ -440,12 +439,3 @@ def build_tip_instruction(
             AccountMeta(pubkey=tip_pk, is_signer=False, is_writable=True),
         ],
     )
-
-
-def associated_token_program() -> Pubkey:
-    """Возвращает Pubkey Associated Token Program.
-
-    Returns:
-        :class:`Pubkey` программы ATA.
-    """
-    return parse_pubkey(ASSOCIATED_TOKEN_PROGRAM_ID)

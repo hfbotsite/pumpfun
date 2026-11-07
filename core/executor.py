@@ -115,15 +115,11 @@ class _SwapPlan:
         instructions: Инструкции в порядке исполнения.
         lookup_tables: Address lookup tables (только для маршрута Jupiter).
         venue: Канал отправки (``jito``/``jupiter``).
-        in_amount: Входной объём (лампорты для buy, base units для sell).
-        out_estimate: Оценка выхода (base units для buy, лампорты для sell).
     """
 
     instructions: list[Instruction] = field(default_factory=list)
     lookup_tables: list[AddressLookupTableAccount] = field(default_factory=list)
     venue: str = "jito"
-    in_amount: int = 0
-    out_estimate: int = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -386,8 +382,6 @@ class OrderExecutor:
         return _SwapPlan(
             instructions=[instruction],
             venue="jito",
-            in_amount=order.sol_amount_lamports,
-            out_estimate=order.expected_tokens,
         )
 
     def _plan_pump_sell(self, order: SellOrder) -> _SwapPlan:
@@ -418,8 +412,6 @@ class OrderExecutor:
         return _SwapPlan(
             instructions=[instruction],
             venue="jito",
-            in_amount=order.token_amount,
-            out_estimate=order.quote.min_amount_out,
         )
 
     # -------------------------------------------------------- Маршрут Jupiter
@@ -469,8 +461,6 @@ class OrderExecutor:
             instructions=swap.core_instructions(),
             lookup_tables=tables,
             venue="jupiter",
-            in_amount=order.sol_amount_lamports,
-            out_estimate=quote.out_amount,
         )
 
     async def _plan_jupiter_sell(self, order: SellOrder) -> _SwapPlan:
@@ -504,8 +494,6 @@ class OrderExecutor:
             instructions=swap.core_instructions(),
             lookup_tables=tables,
             venue="jupiter",
-            in_amount=order.token_amount,
-            out_estimate=quote.out_amount,
         )
 
     # --------------------------------------------------- Сборка и отправка
@@ -648,11 +636,3 @@ class OrderExecutor:
         except ValueError as exc:
             raise ExecutorError(f"Не удалось скомпилировать транзакцию: {exc}") from exc
         return VersionedTransaction(message, [self._keypair])
-
-    def latency_summary(self) -> dict[str, dict[str, float | int]]:
-        """Возвращает сводку метрик латентности исполнителя.
-
-        Returns:
-            Словарь метрик (submit/jito/jupiter).
-        """
-        return self._latency.summary()

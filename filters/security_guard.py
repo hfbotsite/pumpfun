@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from config.settings import settings
 from filters.base_filter import BaseFilter, FilterContext
-from models.trade_data import FilterResult, TokenSecurity
+from models.trade_data import FilterResult
 
 
 class SecurityGuard(BaseFilter):
@@ -103,27 +103,3 @@ class SecurityGuard(BaseFilter):
             freeze_authority=security.freeze_authority,
             lp_burned_pct=round(security.lp_burned_pct, 4),
         )
-
-    # ---------------------------------------------------------- Диагностика
-    def diagnose(self, security: TokenSecurity) -> list[str]:
-        """Возвращает список конкретных проблем безопасности (если есть).
-
-        Удобно для логирования при отклонении актива.
-
-        Args:
-            security: Данные безопасности токена.
-
-        Returns:
-            Список человекочитаемых замечаний; пустой список — токен чист.
-        """
-        issues: list[str] = []
-        if self._require_mint_null and not security.mint_authority_is_null:
-            issues.append(f"mint authority активен: {security.mint_authority}")
-        if self._require_freeze_null and not security.freeze_authority_is_null:
-            issues.append(f"freeze authority активен: {security.freeze_authority}")
-        if security.lp_burned_pct < self._min_lp_burned_pct:
-            issues.append(
-                "LP сожжён лишь на "
-                f"{security.lp_burned_pct:.2f}% (< {self._min_lp_burned_pct:.2f}%)"
-            )
-        return issues

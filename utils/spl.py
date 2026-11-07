@@ -26,9 +26,6 @@ from utils.constants import ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID
 #: Длина сериализованного Mint-аккаунта (SPL Token).
 MINT_ACCOUNT_SIZE: int = 82
 
-#: Длина сериализованного Token-аккаунта (SPL Token).
-TOKEN_ACCOUNT_SIZE: int = 165
-
 #: Смещение поля ``amount`` в Token-аккаунте.
 _TOKEN_AMOUNT_OFFSET: int = 64
 

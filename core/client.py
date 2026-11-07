@@ -626,14 +626,6 @@ class SolanaRpcClient:
             ],
         )
         return result if isinstance(result, dict) else None
-
-    def latency_summary(self) -> dict[str, dict[str, float | int]]:
-        """Возвращает сводку метрик латентности RPC.
-
-        Returns:
-            Словарь метрик.
-        """
-        return self._latency.summary()
 # --------------------------------------------------------------------------- #
 #  WebSocket
 # --------------------------------------------------------------------------- #
@@ -1095,11 +1087,3 @@ class SolanaWsClient:
         if socket is not None:
             with contextlib.suppress(Exception):
                 await socket.close()
-
-    def latency_summary(self) -> dict[str, dict[str, float | int]]:
-        """Возвращает сводку метрик латентности WS.
-
-        Returns:
-            Словарь метрик.
-        """
-        return self._latency.summary()

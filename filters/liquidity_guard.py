@@ -139,19 +139,6 @@ class LiquidityGuard(BaseFilter):
             quote=quote,
         )
 
-    def calculate_expected_tokens(
-        self, context: FilterContext
-    ) -> int:
-        """Возвращает ожидаемое количество токенов за входной ордер.
-
-        Args:
-            context: Контекст фильтрации с текущим состоянием пула.
-
-        Returns:
-            Ожидаемое количество токенов (base units) без учёта дисконта.
-        """
-        return self.check_pool_liquidity(context).expected_tokens
-
     def min_tokens_out(self, context: FilterContext) -> int:
         """Возвращает ``min_amount_out`` с дисконтом проскальзывания входа.
 

@@ -185,11 +185,6 @@ class PoolStreamListener:
         """Реестр отслеживаемых пулов."""
         return self._registry
 
-    @property
-    def tracked_pools(self) -> int:
-        """Число отслеживаемых пулов."""
-        return len(self._registry)
-
     # ------------------------------------------------------------- Жизненный цикл
     async def start(self) -> None:
         """Запускает подписки на логи программ.
@@ -664,11 +659,3 @@ class PoolStreamListener:
             else:
                 pool.quote_reserve = amount
         pool.last_update = time.time()
-
-    def latency_summary(self) -> dict[str, dict[str, float | int]]:
-        """Сводка метрик латентности разбора.
-
-        Returns:
-            Словарь метрик.
-        """
-        return self._latency.summary()

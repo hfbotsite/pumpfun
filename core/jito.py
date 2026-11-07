@@ -309,14 +309,6 @@ class JitoClient:
             )
         return statuses
 
-    def latency_summary(self) -> dict[str, dict[str, float | int]]:
-        """Возвращает сводку метрик латентности Jito.
-
-        Returns:
-            Словарь метрик.
-        """
-        return self._latency.summary()
-
 
 def _first_error(err: Any) -> str | None:
     """Извлекает первый элемент ошибки бандла (``err`` бывает вложенным).

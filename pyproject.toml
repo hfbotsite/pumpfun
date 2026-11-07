@@ -18,7 +18,7 @@ ignore_missing_imports = true
 exclude = ['(^|/)(\.venv|venv|build|dist)/', '^tests/']
 
 [[tool.mypy.overrides]]
-module = ["solders.*", "base58.*", "uvloop.*", "pandas.*", "numpy.*"]
+module = ["solders.*", "base58.*", "uvloop.*"]
 ignore_missing_imports = true
 
 [tool.ruff]
