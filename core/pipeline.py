@@ -36,17 +36,18 @@ from dataclasses import dataclass
 from analytics.indicators import StreamingIndicators
 from config.settings import settings
 from core.client import SolanaRpcClient, SolanaWsClient
+from core.dashboard import DashboardServer
 from core.dry_run import DryRunExecutor
 from core.executor import OrderExecutor
 from core.listener import PoolStreamListener
 from core.orders import TraderExecutor
 from core.persistence import PortfolioStore
 from core.pool_registry import TrackedPool
-from core.portfolio import PortfolioManager
+from core.portfolio import PortfolioManager, PortfolioStats
 from core.screening import ScreeningVerdict, TokenScreeningService
 from core.security import TokenSecurityResolver
 from core.trader import MomentumTrader
-from models.trade_data import SignalAction, TradeEvent
+from models.trade_data import SignalAction, TradeEvent, TradeSide
 from utils.latency import LatencyRegistry
 from utils.logger import get_logger
 from utils.spl import load_keypair
@@ -76,6 +77,8 @@ class PipelineStats:
     """
 
     events: int = 0
+    buys: int = 0
+    sells: int = 0
     entries: int = 0
     exits: int = 0
     orders: int = 0
@@ -92,6 +95,8 @@ class PipelineStats:
         uptime = time.time() - self.started_at if self.started_at else 0.0
         return {
             "events": self.events,
+            "buys": self.buys,
+            "sells": self.sells,
             "entries": self.entries,
             "exits": self.exits,
             "orders": self.orders,
@@ -118,6 +123,7 @@ class LivePipeline:
         close_positions_on_stop: bool = False,
         maintenance_interval_seconds: float | None = None,
         db_path: str | None = None,
+        dashboard_enabled: bool | None = None,
     ) -> None:
         """Инициализирует пайплайн (без сетевых вызовов).
 
@@ -134,6 +140,8 @@ class LivePipeline:
                 «молчащих» пулов, сводка в лог), c (``None`` — из настроек).
             db_path: Путь к SQLite-БД позиций (``None`` — из настроек;
                 dry-run по умолчанию пишет в отдельный файл).
+            dashboard_enabled: Веб-дашборд (``None`` — из настроек; занятый
+                порт не валит запуск — пайплайн продолжит без дашборда).
         """
         self._dry_run = dry_run
         self._watchlist = tuple(watchlist)
@@ -159,6 +167,11 @@ class LivePipeline:
             self._db_path = settings.portfolio_dry_db_path
         else:
             self._db_path = settings.portfolio_db_path
+        self._dashboard_enabled = (
+            settings.dashboard_enabled
+            if dashboard_enabled is None
+            else dashboard_enabled
+        )
 
         self._latency = LatencyRegistry()
         self._rpc: SolanaRpcClient | None = None
@@ -169,6 +182,12 @@ class LivePipeline:
         self._executor: TraderExecutor | None = None
         self._trader: MomentumTrader | None = None
         self._store: PortfolioStore | None = None
+        self._dashboard: DashboardServer | None = None
+
+        self._pnl_curve: list[tuple[float, float]] = []
+        self._rate_ts: float = 0.0
+        self._rate_events: int = 0
+        self._events_per_sec: float = 0.0
 
         self._stop_event = asyncio.Event()
         self._running = False
@@ -305,6 +324,24 @@ class LivePipeline:
             capital_sol=self._capital_sol,
         )
 
+        # Дашборд поднимается до сети: страница доступна сразу — в том числе
+        # для диагностики, почему WS не подключается.
+        if self._dashboard_enabled:
+            self._dashboard = DashboardServer(
+                self.dashboard_snapshot,
+                host=settings.dashboard_host,
+                port=settings.dashboard_port,
+                interval_seconds=settings.dashboard_interval_seconds,
+            )
+            self._dashboard.attach_logger()
+            try:
+                await self._dashboard.start()
+            except OSError as exc:
+                logger.warning(
+                    "Веб-дашборд недоступен ({}) — продолжаю без него", exc
+                )
+                self._dashboard = None
+
         await self._listener.start()
         await self._register_watchlist()
 
@@ -342,6 +379,10 @@ class LivePipeline:
             with contextlib.suppress(Exception):
                 await self._screening.stop()
             self._screening = None
+        if self._dashboard is not None:
+            with contextlib.suppress(Exception):
+                await self._dashboard.close()
+            self._dashboard = None
 
         open_positions = (
             self._trader.portfolio.all_positions() if self._trader else []
@@ -380,6 +421,164 @@ class LivePipeline:
     def request_stop(self) -> None:
         """Просит пайплайн завершиться после текущего события."""
         self._stop_event.set()
+
+    # ------------------------------------------------------------- Дашборд
+    def dashboard_snapshot(self) -> dict[str, object]:
+        """Собирает JSON-снимок состояния для веб-дашборда.
+
+        Защищён от частично инициализированного пайплайна: отсутствующие
+        компоненты дают пустые секции, а не исключение. Вызывается из
+        event-loop дашборда — сетевых вызовов не делает.
+
+        Returns:
+            Словарь с секциями session/positions/stats/stream/screening/
+            unrealized_sol/pnl_curve/logs.
+        """
+        now = time.time()
+        trader = self._trader
+        stats = trader.portfolio.stats if trader is not None else PortfolioStats()
+        closed = trader.portfolio.closed_trades if trader is not None else ()
+
+        positions: list[dict[str, object]] = []
+        unrealized_total = 0.0
+        if trader is not None:
+            for pos in trader.portfolio.all_positions():
+                price = trader.indicators.latest_price(pos.pool_address)
+                if price <= 0:
+                    price = pos.entry_price
+                unrealized = pos.token_amount * (price - pos.entry_price)
+                unrealized_total += unrealized
+                positions.append(
+                    {
+                        "base_mint": pos.base_mint,
+                        "stage": "кривая"
+                        if pos.pool_address
+                        and self._is_curve_pool(pos.pool_address)
+                        else "AMM",
+                        "entry_sol": pos.entry_sol,
+                        "token_amount": pos.token_amount,
+                        "entry_price": pos.entry_price,
+                        "current_price": price,
+                        "pnl_pct": pos.unrealized_pnl_pct(price),
+                        "unrealized_sol": unrealized,
+                        "peak_price": pos.peak_price,
+                        "hold_seconds": max(0.0, now - pos.opened_at),
+                        "tp1_taken": pos.tp1_taken,
+                    }
+                )
+
+        best_pct = max(
+            (trade.pnl_pct for trade in closed), default=0.0
+        )
+        worst_pct = min(
+            (trade.pnl_pct for trade in closed), default=0.0
+        )
+
+        events = self.stats.events
+        if self._rate_ts <= 0:
+            self._rate_ts, self._rate_events = now, events
+        elapsed = now - self._rate_ts
+        if elapsed >= 2.0:
+            self._events_per_sec = max(
+                0.0, (events - self._rate_events) / elapsed
+            )
+            self._rate_ts, self._rate_events = now, events
+
+        listener_stats = (
+            self._listener.stats.as_dict() if self._listener is not None else {}
+        )
+        queue_size = self._listener.trades.qsize() if self._listener else 0
+        screening_counts = (
+            self._screening.counts()
+            if self._screening is not None
+            else {"pending": 0, "approved": 0, "rejected": 0}
+        )
+        rejections = (
+            self._screening.recent_rejections(5)
+            if self._screening is not None
+            else []
+        )
+
+        return {
+            "ts": now,
+            "session": {
+                "mode": "dry-run" if self._dry_run else "live",
+                "network": settings.solana_network,
+                "venue": settings.execution_venue,
+                "uptime_s": max(0.0, now - self.stats.started_at)
+                if self.stats.started_at
+                else 0.0,
+                "wallet": getattr(self._executor, "wallet", "—"),
+                "db": self._db_path or "—",
+                "positions_open": len(positions),
+                "positions_limit": self._max_concurrent_positions,
+                "reserved_sol": getattr(trader.portfolio, "_reserved_sol", 0.0)
+                if trader is not None
+                else 0.0,
+                "capital_sol": self._capital_sol,
+            },
+            "positions": positions,
+            "unrealized_sol": unrealized_total,
+            "stats": {
+                "closed": stats.trades,
+                "wins": stats.wins,
+                "losses": stats.losses,
+                "win_rate_pct": stats.win_rate_pct,
+                "pnl_sol": stats.pnl_sol,
+                "pnl_pct": stats.pnl_pct,
+                "avg_hold_seconds": stats.avg_hold_seconds,
+                "best_pct": best_pct,
+                "worst_pct": worst_pct,
+                "orders_ok": self.stats.orders,
+                "orders_fail": self.stats.failures,
+                "entries": self.stats.entries,
+                "exits": self.stats.exits,
+            },
+            "stream": {
+                "events": events,
+                "events_per_sec": round(self._events_per_sec, 1),
+                "buys": self.stats.buys,
+                "sells": self.stats.sells,
+                "pools": listener_stats.get("discovered_pools", 0),
+                "queue_size": queue_size,
+                "dropped": listener_stats.get("dropped_events", 0),
+                "parse_errors": self.stats.parse_errors,
+                "latency": {
+                    name: {
+                        "p50_ms": values.get("p50_ms", 0.0),
+                        "p95_ms": values.get("p95_ms", 0.0),
+                        "count": values.get("count", 0),
+                    }
+                    for name, values in self._latency.summary().items()
+                },
+            },
+            "screening": {
+                **screening_counts,
+                "recent_rejections": [
+                    {
+                        "base_mint": verdict.base_mint,
+                        "reason": verdict.reason,
+                    }
+                    for verdict in rejections
+                ],
+            },
+            "pnl_curve": self._pnl_curve[-300:],
+            "logs": self._dashboard.log_tail() if self._dashboard else [],
+        }
+
+    def _is_curve_pool(self, pool_address: str) -> bool:
+        """Проверяет стадию пула в реестре (кривая или AMM).
+
+        Args:
+            pool_address: Адрес пула.
+
+        Returns:
+            ``True`` для bonding curve (lp_mint отсутствует).
+        """
+        if self._listener is None:
+            return True
+        pool = self._listener.registry.get(pool_address)
+        return pool is None or pool.lp_mint is None
 
     # -------------------------------------------------------------- Внутреннее
     async def _register_watchlist(self) -> None:
@@ -426,6 +625,10 @@ class LivePipeline:
             event: Событие сделки из очереди.
         """
         self.stats.events += 1
+        if event.side == TradeSide.BUY:
+            self.stats.buys += 1
+        else:
+            self.stats.sells += 1
         pool: TrackedPool | None = self.listener.registry.get(event.pool_address)
         if pool is None:
             return
@@ -446,6 +649,9 @@ class LivePipeline:
         if decision.executed and decision.action == SignalAction.EXIT:
             self.stats.exits += 1
         if decision.closed is not None:
+            self._pnl_curve.append(
+                (time.time(), self.trader.portfolio.stats.pnl_sol)
+            )
             logger.info(
                 "Сделка закрыта: {} ({}) PnL={:+.4f} SOL",
                 decision.closed.base_mint,

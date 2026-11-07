@@ -235,6 +235,20 @@ class Settings(BaseSettings):
     log_dir: str = Field(default="logs", description="Каталог логов loguru.")
 
     # ------------------------------------------------------ Обслуживание пайплайна
+    dashboard_enabled: bool = Field(
+        default=True,
+        description="Веб-дашборд (SSE): вся картина торговли в браузере.",
+    )
+    dashboard_host: str = Field(
+        default="127.0.0.1",
+        description="Адрес веб-дашборда (127.0.0.1 — только локально; для VPS-туннеля).",
+    )
+    dashboard_port: int = Field(
+        default=8787, ge=1, le=65535, description="Порт веб-дашборда."
+    )
+    dashboard_interval_seconds: float = Field(
+        default=2.0, gt=0, description="Интервал SSE-обновления дашборда, c."
+    )
     retry_cooldown_seconds: float = Field(
         default=2.0, ge=0,
         description="Пауза перед повторным входом по пулу после неуспешного ордера, c.",

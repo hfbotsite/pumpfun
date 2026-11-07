@@ -232,6 +232,41 @@ class TokenScreeningService:
             return "stale"
         return "approved" if verdict.approved else "rejected"
 
+    def counts(self) -> dict[str, int]:
+        """Счётчики вердиктов для дашборда/логов (только свежие).
+
+        Returns:
+            Словарь ``pending/approved/rejected``.
+        """
+        approved = sum(
+            1
+            for v in self._verdicts.values()
+            if v.approved and not self._is_stale(v)
+        )
+        rejected = sum(
+            1
+            for v in self._verdicts.values()
+            if not v.approved and not self._is_stale(v)
+        )
+        return {
+            "pending": len(self._queued),
+            "approved": approved,
+            "rejected": rejected,
+        }
+
+    def recent_rejections(self, limit: int = 5) -> list[ScreeningVerdict]:
+        """Последние отклонения (для дашборда: кто и почему не торгуется).
+
+        Args:
+            limit: Сколько вердиктов вернуть.
+
+        Returns:
+            Список отклоняющих вердиктов, новые впереди.
+        """
+        rejected = [v for v in self._verdicts.values() if not v.approved]
+        rejected.sort(key=lambda v: v.checked_at, reverse=True)
+        return rejected[:limit]
+
     async def provider(self, pool: PoolInfo) -> TokenSecurity | None:
         """Провайдер данных безопасности для трейдера (горячий путь).
 

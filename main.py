@@ -104,6 +104,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="уровень логирования: DEBUG/INFO/WARNING/ERROR",
     )
     parser.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        help="не поднимать веб-дашборд (переопределяет DASHBOARD_ENABLED)",
+    )
+    parser.add_argument(
         "--status",
         action="store_true",
         help="показать открытые позиции и сводку сделок из БД и выйти",
@@ -199,6 +204,7 @@ async def _run_pipeline(args: argparse.Namespace) -> int:
         capital_sol=args.capital,
         close_positions_on_stop=args.close_on_stop,
         db_path=args.db,
+        dashboard_enabled=not args.no_dashboard,
     )
 
     loop = asyncio.get_running_loop()
