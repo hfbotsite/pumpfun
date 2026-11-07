@@ -363,11 +363,13 @@ class JitoClient:
                 return last_status
             if normalized in _FAILED_STATUSES:
                 if last_status.error is None and last_error is not None:
-                    last_status = last_status.model_copy(error=last_error)
+                    last_status = last_status.model_copy(
+                        update={"error": last_error}
+                    )
                 return last_status
             if time.monotonic() >= deadline:
                 return last_status.model_copy(
-                    error=last_error or last_status.error
+                    update={"error": last_error or last_status.error}
                 )
             await asyncio.sleep(max(0.05, poll))
 
