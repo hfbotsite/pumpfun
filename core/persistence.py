@@ -244,6 +244,31 @@ class PortfolioStore:
         self._conn.commit()
 
     # ---------------------------------------------------------------- Жизненный цикл
+    def closed_trades_summary(self) -> dict[str, float | int]:
+        """Агрегирует журнал закрытых сделок (для команды ``--status``).
+
+        Returns:
+            Словарь: число сделок, вложено/возвращено SOL и PnL.
+        """
+        row = self._conn.execute(
+            """
+            SELECT COUNT(*),
+                   COALESCE(SUM(invested_sol), 0.0),
+                   COALESCE(SUM(returned_sol), 0.0)
+            FROM closed_trades
+            """
+        ).fetchone()
+        if row is None:
+            return {"closed_trades": 0, "invested_sol": 0.0, "returned_sol": 0.0, "pnl_sol": 0.0}
+        invested = float(row[1])
+        returned = float(row[2])
+        return {
+            "closed_trades": int(row[0]),
+            "invested_sol": round(invested, 6),
+            "returned_sol": round(returned, 6),
+            "pnl_sol": round(returned - invested, 6),
+        }
+
     def close(self) -> None:
         """Закрывает соединение с БД. Идемпотентно."""
         if self._conn is not None:
