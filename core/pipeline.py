@@ -38,6 +38,7 @@ from typing import Any
 from analytics.backtester import Backtester
 from analytics.indicators import StreamingIndicators
 from analytics.replay import (
+    ReplayError,
     ReplayPoolConfig,
     ReplayScenario,
     events_to_csv_text,
@@ -825,6 +826,25 @@ class LivePipeline:
         Returns:
             ``{ok, report}`` / ``{ok, csv}`` / ``{ok, error}``.
         """
+        # Любой сбой (нет DNS до Helius, таймауты, битые данные) должен
+        # приходить на страницу JSON-ом с ошибкой, а не 500 без тела.
+        try:
+            return await self._dashboard_backtest_inner(payload)
+        except RpcError as exc:
+            return {
+                "ok": False,
+                "error": f"Helius RPC недоступен: {exc} — проверьте DNS/сеть и HELIUS_API_KEY",
+            }
+        except ReplayError as exc:
+            return {"ok": False, "error": f"реплей не удался: {exc}"}
+        except Exception as exc:
+            logger.exception("Ошибка бэктеста")
+            return {"ok": False, "error": f"внутренняя ошибка бэктеста: {exc}"}
+
+    async def _dashboard_backtest_inner(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Основная логика режимов бэктеста (см. _dashboard_backtest)."""
         mode = str(payload.get("mode", "csv")).strip()
         try:
             trade_amount_sol = float(
@@ -919,14 +939,23 @@ class LivePipeline:
             return {"ok": False, "error": f"не удалось вывести bonding curve: {exc}"}
         limit = min(1000, max(50, int(payload.get("max_tx", 500))))
         signatures = await rpc.get_signatures_for_address(curve_address, limit=limit)
+        # Параллельная загрузка: 500 транзакций последовательно = минуты.
+        semaphore = asyncio.Semaphore(8)
+
+        async def _fetch(info: dict[str, Any]) -> dict[str, Any] | None:
+            async with semaphore:
+                try:
+                    return await rpc.get_transaction(str(info.get("signature", "")))
+                except RpcError as exc:
+                    logger.debug("getTransaction не удался: {}", exc)
+                    return None
+
+        transactions = await asyncio.gather(*(_fetch(info) for info in signatures))
         entries: list[tuple[float, str, PumpTradeEvent]] = []
-        for info in reversed(signatures):  # старые впереди
-            signature = str(info.get("signature", ""))
-            if not signature or info.get("err"):
-                continue
-            tx = await rpc.get_transaction(signature)
+        for info, tx in zip(signatures, transactions, strict=True):
             if not tx:
                 continue
+            signature = str(info.get("signature", ""))
             logs = (tx.get("meta") or {}).get("logMessages") or []
             block_time = float(tx.get("blockTime") or 0)
             for parsed in extract_pump_trade_events(logs):

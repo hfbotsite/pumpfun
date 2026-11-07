@@ -14,6 +14,7 @@ from analytics.replay import (
     events_to_csv_text,
     parse_events_csv_text,
 )
+from core.client import RpcError
 from core.pipeline import LivePipeline
 from models.trade_data import DEXType, TokenSecurity
 from tests.test_backtester import build_pump_events
@@ -165,3 +166,27 @@ def test_report_to_dict_shape() -> None:
     ):
         assert key in data, key
     assert isinstance(data["exit_reasons"], dict)
+
+
+class TestMintRpcFailure:
+    """Сбой Helius в mint-режиме приходит JSON-ом, а не 500."""
+
+    def test_friendly_rpc_error(self) -> None:
+        """RpcError (нет DNS/ключа) → ok=False с человеческим текстом."""
+        class DeadRpc:
+            def get_signatures_for_address(self, address, *, limit=500, commitment="confirmed"):
+                raise RpcError("[Errno 11001] getaddrinfo failed")
+
+        pipeline = LivePipeline(dry_run=True)
+        pipeline._rpc = DeadRpc()
+        result = asyncio.run(
+            pipeline._dashboard_backtest(
+                {
+                    "mode": "mint",
+                    "url": "https://pump.fun/coin/7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+                }
+            )
+        )
+        assert result["ok"] is False
+        assert "Helius RPC недоступен" in str(result["error"])
+        assert "getaddrinfo" in str(result["error"])
