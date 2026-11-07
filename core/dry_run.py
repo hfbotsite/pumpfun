@@ -178,6 +178,7 @@ class DryRunExecutor:
             token_amount=token_amount,
             price_impact_pct=order.price_impact_pct,
             venue=self._venue,
+            confirmed=True,
             submitted_at=time.time(),
             latency_ms=elapsed_us / 1000.0,
         )
@@ -231,6 +232,7 @@ class DryRunExecutor:
             token_amount=token_amount,
             price_impact_pct=order.price_impact_pct,
             venue=self._venue,
+            confirmed=True,
             submitted_at=time.time(),
             latency_ms=elapsed_us / 1000.0,
         )

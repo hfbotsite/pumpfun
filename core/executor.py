@@ -561,6 +561,39 @@ class OrderExecutor:
             bundle_id,
             elapsed_us / 1000.0,
         )
+
+        confirmed = True
+        landed_slot: int | None = None
+        if settings.jito_require_confirmation:
+            status = await self._jito.await_bundle_confirmation(bundle_id)
+            normalized = status.status.strip().lower()
+            if normalized == "landed":
+                landed_slot = status.landed_slot
+                logger.info(
+                    "Бандл {} подтверждён в слоте {}", bundle_id, landed_slot
+                )
+            else:
+                confirmed = False
+                # Транзакция могла всё же приземлиться после таймаута —
+                # подпись нужно проверить вручную через getSignatureStatuses.
+                logger.critical(
+                    "Бандл {} НЕ подтверждён ({}): sig={} — проверьте "
+                    "статус подписи вручную, средства могли быть списаны",
+                    bundle_id,
+                    status.error or status.status,
+                    signature,
+                )
+                return OrderResult.failed(
+                    side=side,
+                    base_mint=base_mint,
+                    pool_address=pool_address,
+                    error=(
+                        f"бандл не подтверждён: {status.status}"
+                        + (f" ({status.error})" if status.error else "")
+                    ),
+                    venue=plan.venue,
+                )
+
         return OrderResult(
             success=True,
             side=side,
@@ -572,6 +605,8 @@ class OrderExecutor:
             token_amount=token_amount,
             price_impact_pct=price_impact_pct,
             venue=plan.venue,
+            confirmed=confirmed,
+            landed_slot=landed_slot,
             submitted_at=time.time(),
             latency_ms=elapsed_us / 1000.0,
         )

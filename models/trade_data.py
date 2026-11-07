@@ -296,6 +296,11 @@ class OrderResult(BaseModel):
     token_amount: float = Field(default=0.0, ge=0, description="Объём в токенах.")
     price_impact_pct: float = Field(default=0.0, ge=0, description="Оценённый Price Impact, %.")
     venue: str = Field(default="jito", description="Канал отправки (jito/jupiter).")
+    confirmed: bool = Field(
+        default=False,
+        description="Бандл подтверждён (Landed) и транзакция в блоке.",
+    )
+    landed_slot: int | None = Field(default=None, description="Слот приземления бандла.")
     error: str | None = Field(default=None, description="Текст ошибки при неуспехе.")
     submitted_at: float = Field(default=0.0, description="Время отправки, unix ts.")
     latency_ms: float = Field(default=0.0, ge=0, description="Задержка отправки, мс.")

@@ -40,6 +40,7 @@ from core.dry_run import DryRunExecutor
 from core.executor import OrderExecutor
 from core.listener import PoolStreamListener
 from core.orders import TraderExecutor
+from core.persistence import PortfolioStore
 from core.pool_registry import TrackedPool
 from core.portfolio import PortfolioManager
 from core.security import TokenSecurityResolver
@@ -56,6 +57,9 @@ QUEUE_POLL_TIMEOUT: float = 1.0
 
 #: Возраст «молчания» пула, после которого он удаляется из реестра, c.
 STALE_POOL_SECONDS: float = 600.0
+
+#: Отдельная БД для dry-run, чтобы бумажные позиции не смешивались с боевыми.
+DRY_RUN_DB_PATH: str = "data/bot_dry.db"
 
 
 class PipelineError(RuntimeError):
@@ -114,29 +118,47 @@ class LivePipeline:
         *,
         dry_run: bool = False,
         watchlist: Sequence[str] = (),
-        max_concurrent_positions: int = 1,
+        max_concurrent_positions: int | None = None,
         capital_sol: float | None = None,
         close_positions_on_stop: bool = False,
         maintenance_interval_seconds: float = 60.0,
+        db_path: str | None = None,
     ) -> None:
         """Инициализирует пайплайн (без сетевых вызовов).
 
         Args:
             dry_run: Не отправлять транзакции (бумажное исполнение).
             watchlist: Mint-адреса, которые нужно отслеживать с момента старта.
-            max_concurrent_positions: Максимум одновременно открытых позиций.
-            capital_sol: Ограничение свободного капитала, SOL.
+            max_concurrent_positions: Максимум одновременно открытых позиций
+                (``None`` — из настроек).
+            capital_sol: Ограничение свободного капитала, SOL (``None`` — из
+                настроек).
             close_positions_on_stop: Принудительно продавать позиции при
                 завершении работы.
             maintenance_interval_seconds: Интервал обслуживания (очистка
                 «молчащих» пулов, сводка в лог), c.
+            db_path: Путь к SQLite-БД позиций (``None`` — из настроек;
+                dry-run по умолчанию пишет в отдельный файл).
         """
         self._dry_run = dry_run
         self._watchlist = tuple(watchlist)
-        self._max_concurrent_positions = max(1, max_concurrent_positions)
-        self._capital_sol = capital_sol
+        self._max_concurrent_positions = max(
+            1,
+            settings.max_concurrent_positions
+            if max_concurrent_positions is None
+            else max_concurrent_positions,
+        )
+        self._capital_sol = (
+            settings.capital_sol if capital_sol is None else capital_sol
+        )
         self._close_positions_on_stop = close_positions_on_stop
         self._maintenance_interval = max(5.0, maintenance_interval_seconds)
+        if db_path is not None:
+            self._db_path = db_path
+        elif dry_run:
+            self._db_path = DRY_RUN_DB_PATH
+        else:
+            self._db_path = settings.portfolio_db_path
 
         self._latency = LatencyRegistry()
         self._rpc: SolanaRpcClient | None = None
@@ -145,6 +167,7 @@ class LivePipeline:
         self._resolver: TokenSecurityResolver | None = None
         self._executor: TraderExecutor | None = None
         self._trader: MomentumTrader | None = None
+        self._store: PortfolioStore | None = None
 
         self._stop_event = asyncio.Event()
         self._running = False
@@ -238,11 +261,23 @@ class LivePipeline:
         window = max(
             settings.entry_window_seconds, settings.exit_window_seconds
         )
+        if self._db_path:
+            self._store = PortfolioStore(self._db_path)
+        portfolio = PortfolioManager(
+            max_concurrent_positions=self._max_concurrent_positions,
+            store=self._store,
+        )
+        restored = portfolio.load_open_positions()
+        if restored:
+            logger.warning(
+                "Рестарт с открытыми позициями: лимит {}, занято {} — новые "
+                "входы ограничены, пока восстановленные позиции не закроются",
+                self._max_concurrent_positions,
+                portfolio.open_count,
+            )
         self._trader = MomentumTrader(
             executor=executor,
-            portfolio=PortfolioManager(
-                max_concurrent_positions=self._max_concurrent_positions
-            ),
+            portfolio=portfolio,
             security_provider=self._resolver.resolve_for_pool,
             indicators=StreamingIndicators(window),
             capital_sol=self._capital_sol,
@@ -303,6 +338,10 @@ class LivePipeline:
             with contextlib.suppress(Exception):
                 await self._executor.close()
             self._executor = None
+        if self._store is not None:
+            with contextlib.suppress(Exception):
+                self._store.close()
+            self._store = None
         if self._rpc is not None:
             with contextlib.suppress(Exception):
                 await self._rpc.close()

@@ -331,7 +331,7 @@ class MomentumTrader:
             )
 
         result = await self._executor.execute_buy(order)
-        if not result.success:
+        if not result.success or not result.confirmed:
             self._block_for(pool.pool_address, event.timestamp)
             return TradeDecision(
                 action=SignalAction.ENTER,
@@ -427,7 +427,7 @@ class MomentumTrader:
             )
 
         result = await self._executor.execute_sell(order)
-        if not result.success:
+        if not result.success or not result.confirmed:
             self._block_for(pool.pool_address, event.timestamp)
             return TradeDecision(
                 action=SignalAction.EXIT,

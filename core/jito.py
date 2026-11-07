@@ -51,6 +51,12 @@ _RETRY_BASE_SECONDS: float = 0.15
 #: Потолок задержки перед повтором запроса, c.
 _RETRY_MAX_SECONDS: float = 1.2
 
+#: Статус бандла, означающий попадание транзакций в блок.
+_LANDED_STATUS: str = "landed"
+
+#: Терминальные статусы бандла: дальнейший опрос бессмыслен.
+_FAILED_STATUSES: frozenset[str] = frozenset({"failed", "invalid"})
+
 
 class JitoError(RuntimeError):
     """Ошибка взаимодействия с Jito Block Engine."""
@@ -308,6 +314,62 @@ class JitoClient:
                 error=_first_error(item.get("err")),
             )
         return statuses
+
+    async def await_bundle_confirmation(
+        self,
+        bundle_id: str,
+        *,
+        timeout_seconds: float | None = None,
+        poll_seconds: float | None = None,
+    ) -> JitoBundleStatus:
+        """Опрашивает статусы бандла до подтверждения, отказа или таймаута.
+
+        Считается успехом только статус ``Landed`` — то есть бандл реально
+        попал в блок. ``Failed``/``Invalid`` завершают ожидание сразу.
+        Временные сбои сети не прерывают опрос: они пересматриваются до
+        истечения общего таймаута.
+
+        Args:
+            bundle_id: ID бандла из :meth:`send_bundle`.
+            timeout_seconds: Общий таймаут ожидания, c (по умолчанию из
+                настроек).
+            poll_seconds: Интервал опроса, c (по умолчанию из настроек).
+
+        Returns:
+            Последний известный :class:`~models.trade_data.JitoBundleStatus`;
+            при таймауте это статус ``Pending`` с последней ошибкой опроса.
+        """
+        timeout = (
+            settings.jito_confirm_timeout_seconds
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+        poll = (
+            settings.jito_confirm_poll_seconds
+            if poll_seconds is None
+            else poll_seconds
+        )
+        deadline = time.monotonic() + max(0.0, timeout)
+        last_error: str | None = None
+        last_status = JitoBundleStatus(bundle_id=bundle_id, status="Pending")
+        while True:
+            try:
+                statuses = await self.get_bundle_statuses([bundle_id])
+                last_status = statuses.get(bundle_id, last_status)
+            except JitoError as exc:
+                last_error = str(exc)
+            normalized = last_status.status.strip().lower()
+            if normalized == _LANDED_STATUS:
+                return last_status
+            if normalized in _FAILED_STATUSES:
+                if last_status.error is None and last_error is not None:
+                    last_status = last_status.model_copy(error=last_error)
+                return last_status
+            if time.monotonic() >= deadline:
+                return last_status.model_copy(
+                    error=last_error or last_status.error
+                )
+            await asyncio.sleep(max(0.05, poll))
 
 
 def _first_error(err: Any) -> str | None:

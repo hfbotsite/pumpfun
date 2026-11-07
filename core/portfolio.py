@@ -1,10 +1,15 @@
-"""Менеджер торговых позиций (in-memory ledger).
+"""Менеджер торговых позиций (memory + опциональная SQLite-персистентность).
 
 Модуль — единственный источник истины о том, какие позиции открыты, сколько
 токенов осталось и какой PnL уже реализован. Его используют и live-пайплайн
 (:mod:`core.trader`), и бэктестер (:mod:`analytics.backtester`), поэтому он не
 делает сетевых вызовов и не принимает торговых решений — только учитывает
 состояние.
+
+Если передан :class:`~core.persistence.PortfolioStore`, менеджер работает в
+режиме **write-through**: каждое изменение позиции немедленно пишется в БД, а
+метод :meth:`PortfolioManager.load_open_positions` восстанавливает состояние
+после перезапуска. Без store менеджер ведёт себя как прежде — чисто в памяти.
 
 Ключевые инварианты:
 
@@ -21,6 +26,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+from core.persistence import PortfolioStore
 from models.trade_data import DEXType, Position
 from utils.logger import get_logger
 
@@ -129,13 +135,26 @@ class PortfolioManager:
     обрезается до остатка.
     """
 
-    __slots__ = ("_closed", "_max_positions", "_positions", "_reserved_sol", "_stats")
+    __slots__ = (
+        "_closed",
+        "_max_positions",
+        "_positions",
+        "_reserved_sol",
+        "_stats",
+        "_store",
+    )
 
-    def __init__(self, *, max_concurrent_positions: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        max_concurrent_positions: int = 1,
+        store: PortfolioStore | None = None,
+    ) -> None:
         """Инициализирует пустой портфель.
 
         Args:
             max_concurrent_positions: Максимум одновременно открытых позиций.
+            store: SQLite-хранилище write-through (``None`` — только память).
 
         Raises:
             PortfolioError: Если лимит меньше единицы.
@@ -147,6 +166,7 @@ class PortfolioManager:
         self._stats = PortfolioStats()
         self._max_positions = max_concurrent_positions
         self._reserved_sol: float = 0.0
+        self._store = store
 
     # ------------------------------------------------------------------ Свойства
     @property
@@ -168,6 +188,33 @@ class PortfolioManager:
     def closed_trades(self) -> tuple[ClosedTrade, ...]:
         """Кортеж закрытых сделок в порядке закрытия."""
         return tuple(self._closed)
+
+    def load_open_positions(self) -> int:
+        """Восстанавливает открытые позиции из хранилища (после рестарта).
+
+        Вызов до начала торговли: позиции из БД попадают в memory-слой и
+        снова учитываются лимитами и стратегией выходов.
+
+        Returns:
+            Число восстановленных позиций.
+        """
+        if self._store is None:
+            return 0
+        restored = 0
+        for position in self._store.load_open_positions():
+            if position.base_mint in self._positions:
+                continue
+            self._positions[position.base_mint] = position
+            self._reserved_sol += position.entry_sol
+            restored += 1
+        if restored:
+            logger.warning(
+                "Восстановлено открытых позиций из БД: {} ({}); "
+                "бот продолжит управлять их выходами",
+                restored,
+                [p.base_mint for p in self.all_positions()],
+            )
+        return restored
 
     def can_open(self, *, capital_sol: float | None = None) -> bool:
         """Проверяет, можно ли открыть ещё одну позицию.
@@ -262,6 +309,7 @@ class PortfolioManager:
         )
         self._positions[base_mint] = position
         self._reserved_sol += entry_sol
+        self._persist(position)
         logger.info(
             "Открыта позиция {}: price={:.9f} SOL, in={:.4f} SOL, tokens={:.4f}",
             base_mint,
@@ -285,7 +333,10 @@ class PortfolioManager:
         position = self._positions.get(base_mint)
         if position is None or price <= 0:
             return position
+        previous_peak = position.peak_price
         position.update_peak(price)
+        if position.peak_price > previous_peak:
+            self._persist(position)
         return position
 
     def mark_tp1_taken(self, base_mint: str) -> None:
@@ -297,6 +348,7 @@ class PortfolioManager:
         position = self._positions.get(base_mint)
         if position is not None:
             position.tp1_taken = True
+            self._persist(position)
 
     # ------------------------------------------------------------------ Продажа
     def apply_sell(
@@ -339,6 +391,7 @@ class PortfolioManager:
 
         remaining_fraction = position.remaining_fraction
         if remaining_fraction > DUST_FRACTION:
+            self._persist(position)
             return None
 
         position.token_amount = 0.0
@@ -412,6 +465,21 @@ class PortfolioManager:
         """
         self._positions.pop(position.base_mint, None)
         self._reserved_sol = max(0.0, self._reserved_sol - position.entry_sol)
+        if self._store is not None:
+            self._store.remove_position(position.base_mint)
+            self._store.record_closed_trade(
+                base_mint=position.base_mint,
+                pool_address=position.pool_address,
+                dex=position.dex,
+                entry_price=position.entry_price,
+                exit_price=exit_price,
+                invested_sol=position.entry_sol,
+                returned_sol=position.realized_sol,
+                opened_at=position.opened_at,
+                closed_at=sold_at,
+                peak_price=position.peak_price,
+                exit_reason=exit_reason,
+            )
 
         trade = ClosedTrade(
             base_mint=position.base_mint,
@@ -463,3 +531,22 @@ class PortfolioManager:
             "pnl_pct": round(self._stats.pnl_pct, 4),
             "avg_hold_seconds": round(self._stats.avg_hold_seconds, 3),
         }
+
+    # -------------------------------------------------------------- Персистентность
+    def _persist(self, position: Position) -> None:
+        """Пишет позицию в хранилище (write-through), если оно подключено.
+
+        Сбой записи логируется, но не ломает торговлю: memory-слой остаётся
+        источником истины в рамках процесса.
+
+        Args:
+            position: Текущее состояние позиции.
+        """
+        if self._store is None:
+            return
+        try:
+            self._store.upsert_position(position)
+        except Exception:
+            logger.exception(
+                "Не удалось сохранить позицию {} в БД", position.base_mint
+            )

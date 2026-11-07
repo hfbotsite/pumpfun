@@ -79,6 +79,18 @@ class Settings(BaseSettings):
     max_price_impact_pct: float = Field(
         default=5.0, gt=0, lt=100, description="Предельный Price Impact ордера, %."
     )
+    max_concurrent_positions: int = Field(
+        default=3, ge=1, description="Максимум одновременно открытых позиций."
+    )
+    capital_sol: float | None = Field(
+        default=None, gt=0, description="Лимит свободного капитала, SOL (None — без лимита)."
+    )
+
+    # ---------------------------------------------------------------- Память
+    portfolio_db_path: str = Field(
+        default="data/bot.db",
+        description="Путь к SQLite-БД позиций (пусто = только память).",
+    )
 
     # -------------------------------------------------------------------- Jito
     jito_tip_sol: float = Field(
@@ -89,6 +101,16 @@ class Settings(BaseSettings):
         description="URL Jito Block Engine (региональный).",
     )
     jito_region: str = Field(default="frankfurt", description="Метка региона Jito.")
+    jito_require_confirmation: bool = Field(
+        default=True,
+        description="Считать ордер исполненным только после подтверждения бандла.",
+    )
+    jito_confirm_timeout_seconds: float = Field(
+        default=10.0, gt=0, description="Таймаут ожидания подтверждения бандла, c."
+    )
+    jito_confirm_poll_seconds: float = Field(
+        default=0.5, gt=0, description="Интервал опроса статуса бандла, c."
+    )
 
     # ------------------------------------------------------------ Compute Budget
     compute_unit_limit: int = Field(
