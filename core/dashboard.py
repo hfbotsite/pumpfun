@@ -95,6 +95,7 @@ padding:4px 10px;font-size:12px;cursor:pointer}
 border-radius:6px;color:var(--fg);font-size:13px}
 #loginerr{color:var(--red);font-size:12px;min-height:16px}
 #action_status{font-size:12px;color:var(--dim);margin-left:10px}
+#log.frozen{outline:1px solid var(--blue)}
 .backtab{display:block;margin:16px auto 0;width:190px;height:30px;border:none;
 border-radius:190px 190px 0 0;background:linear-gradient(180deg,#58a6ff,#1f6feb);
 color:#fff;font-weight:700;letter-spacing:.14em;font-size:13px;cursor:pointer}
@@ -155,7 +156,7 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
   <section class="card"><h2>Поток сделок</h2><div id="stream"></div></section>
   <section class="card"><h2>Отбор токенов</h2><div id="screen"></div></section>
   <section class="card"><h2>Латентность (мс, p50 / p95)</h2><div id="latency">—</div></section>
-  <section class="card wide"><h2>Лог (хвост)</h2><pre id="log">—</pre></section>
+  <section class="card wide"><div class="poshead"><h2>Лог (хвост)</h2><span class="spacer"></span><span id="loghint" style="color:var(--dim);font-size:11px"></span><button class="btn mini" id="logcopy" title="Скопировать весь видимый лог">копировать</button></div><pre id="log">—</pre></section>
 
   <button class="backtab" id="backtab">⌗ BACKTEST</button>
   <section class="card wide" id="backtest" style="display:none">
@@ -277,7 +278,7 @@ function render(d){
       `<tr><td>${esc(k)}</td><td>${fmt(v.p50_ms||0,1)}</td><td>${fmt(v.p95_ms||0,1)}</td><td>${v.count??0}</td></tr>`).join('')}</table>`
     :'—';
 
-  $('log').textContent=(d.logs||[]).join('\\n')||'—';
+  updateLog(d.logs||[]);
 }
 
 function drawChart(curve){
@@ -325,6 +326,37 @@ $('loginbtn').onclick=async()=>{
 };
 $('logout').onclick=()=>{TOKEN='';localStorage.removeItem('dash_token');if(es)es.close();showLogin()};
 
+const logEl=$('log');
+function selectionInLog(){
+  const s=window.getSelection();
+  return !!(s && s.rangeCount>0 && !s.isCollapsed && logEl.contains(s.anchorNode));
+}
+function updateLog(lines){
+  if(selectionInLog()){
+    logEl.classList.add('frozen');
+    $('loghint').textContent='выделено — обновление приостановлено, скопируйте и снимите выделение';
+    return;
+  }
+  logEl.classList.remove('frozen');
+  const atBottom=logEl.scrollHeight-logEl.scrollTop-logEl.clientHeight<8;
+  const top=logEl.scrollTop;
+  logEl.textContent=lines.join(String.fromCharCode(10))||'—';
+  logEl.scrollTop=atBottom?logEl.scrollHeight:top;
+}
+$('logcopy').onclick=async()=>{
+  const text=logEl.textContent==='—'?'':logEl.textContent;
+  if(!text)return;
+  try{
+    await navigator.clipboard.writeText(text);
+    $('loghint').textContent='скопировано в буфер';
+  }catch(e){
+    const range=document.createRange();range.selectNodeContents(logEl);
+    const s=window.getSelection();s.removeAllRanges();s.addRange(range);
+    const ok=document.execCommand&&document.execCommand('copy');
+    $('loghint').textContent=ok?'скопировано':'текст выделен — нажмите Ctrl+C';
+  }
+  setTimeout(()=>{$('loghint').textContent=''},2500);
+};
 $('sellall').onclick=async()=>{
   if(busy)return;
   if(!confirm('Продать ВСЕ открытые позиции прямо сейчас?'))return;
