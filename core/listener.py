@@ -240,6 +240,22 @@ class PoolStreamListener:
                 logger.debug("Ретрай подписки слушателя не удался: {}", exc)
             await asyncio.sleep(5.0)
 
+    async def unsubscribe_pool(self, pool_address: str) -> None:
+        """Отписывает аккаунты пула (после удаления из реестра).
+
+        Без этого число account-подписок растёт неограниченно, и каждый
+        реконнект переподписывает десятки «мёртвых» аккаунтов.
+
+        Args:
+            pool_address: Адрес пула.
+        """
+        tokens = self._subscription_tokens.pop(pool_address, [])
+        for token in tokens:
+            try:
+                await self._ws.unsubscribe(token)
+            except RpcError as exc:
+                logger.debug("Отписка {} не удалась: {}", token, exc)
+
     async def stop(self) -> None:
         """Останавливает слушатель и снимает все подписки."""
         if self._retry_task is not None and not self._retry_task.done():

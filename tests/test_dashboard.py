@@ -282,8 +282,6 @@ class TestShutdown:
 
     async def test_shutdown_calls_handler(self) -> None:
         """POST /api/shutdown вызывает обработчик остановки."""
-        from core.dashboard import DashboardServer
-
         called: list[bool] = []
 
         async def on_shutdown() -> None:
@@ -295,10 +293,11 @@ class TestShutdown:
         await server.start()
         try:
             base = f"http://127.0.0.1:{server._runner.addresses[0][1]}"
-            async with aiohttp.ClientSession() as http:
-                async with http.post(f"{base}/api/shutdown") as resp:
-                    assert resp.status == 200
-                    assert (await resp.json())["ok"] is True
+            async with aiohttp.ClientSession() as http, http.post(
+                f"{base}/api/shutdown"
+            ) as resp:
+                assert resp.status == 200
+                assert (await resp.json())["ok"] is True
             await asyncio.sleep(0.7)  # delayed-задача (0.5 c)
             assert called == [True]
         finally:
@@ -310,9 +309,10 @@ class TestShutdown:
         await server.start()
         try:
             base = f"http://127.0.0.1:{server._runner.addresses[0][1]}"
-            async with aiohttp.ClientSession() as http:
-                async with http.post(f"{base}/api/shutdown") as resp:
-                    assert resp.status == 503
+            async with aiohttp.ClientSession() as http, http.post(
+                f"{base}/api/shutdown"
+            ) as resp:
+                assert resp.status == 503
         finally:
             await server.close()
 

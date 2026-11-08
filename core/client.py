@@ -736,6 +736,8 @@ class SolanaWsClient:
         self._ws: Any | None = None
         self._task: asyncio.Task[None] | None = None
         self._connected = asyncio.Event()
+        # Диагностика качества соединения: уведомления с момента подключения.
+        self._conn_notifications = 0
         self._closed = False
 
         self._request_id = 0
@@ -748,6 +750,11 @@ class SolanaWsClient:
     def url(self) -> str:
         """WS endpoint клиента."""
         return self._url
+
+    @property
+    def notifications_since_connect(self) -> int:
+        """Уведомлений получено с момента текущего подключения."""
+        return self._conn_notifications
 
     @property
     def is_connected(self) -> bool:
@@ -960,10 +967,23 @@ class SolanaWsClient:
                 ) as socket:
                     self._ws = socket
                     backoff = settings.ws_initial_reconnect_delay
+                    self._conn_notifications = 0
                     logger.info("WS подключён: {}", self._url)
-                    await self._resubscribe_all()
-                    self._connected.set()
-                    await self._reader(socket)
+                    # КРИТИЧНО: читатель стартует ДО переподписки. Иначе
+                    # ответы сервера на subscribe никто не читает — каждый
+                    # запрос падает по таймауту, подписки не восстанавливаются
+                    # (поток событий умирает после первого реконнекта), а
+                    # keepalive-ping также остаётся без ответа (разрыв).
+                    reader_task = asyncio.create_task(self._reader(socket))
+                    try:
+                        await self._resubscribe_all()
+                        self._connected.set()
+                        await reader_task
+                    finally:
+                        if not reader_task.done():
+                            reader_task.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await reader_task
             except asyncio.CancelledError:
                 raise
             except (ConnectionClosed, OSError) as exc:
@@ -971,6 +991,14 @@ class SolanaWsClient:
             except Exception as exc:
                 logger.opt(exception=exc).error("WS ошибка: {}", exc)
             finally:
+                was_connected = self._connected.is_set()
+                if was_connected and self._conn_notifications == 0:
+                    logger.warning(
+                        "WS: соединение разорвалось до первого уведомления "
+                        "({} подписок восстановлено) — сервер не присылал "
+                        "события; возможен лимит/прокси",
+                        len(self._records),
+                    )
                 self._connected.clear()
                 self._ws = None
                 self._fail_pending(RpcError("WS-соединение потеряно"))
@@ -1018,6 +1046,7 @@ class SolanaWsClient:
         method = message.get("method")
         if method not in _NOTIFICATION_KINDS:
             return
+        self._conn_notifications += 1
         params = message.get("params") or {}
         server_id = params.get("subscription")
         if server_id is None:

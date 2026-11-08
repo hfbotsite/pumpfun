@@ -1145,6 +1145,10 @@ class LivePipeline:
         pruned = self.listener.registry.prune_stale(settings.stale_pool_seconds)
         for pool_address in pruned:
             self.trader.forget_pool(pool_address)
+            try:
+                await self.listener.unsubscribe_pool(pool_address)
+            except RpcError as exc:
+                logger.debug("Отписка пула {} не удалась: {}", pool_address, exc)
         if pruned:
             logger.info("Удалено «молчащих» пулов: {}", len(pruned))
 
