@@ -640,7 +640,12 @@ class DashboardServer:
             return
 
         def _sink(message: Any) -> None:
-            self._log_tail.append(str(message).rstrip("\n"))
+            # Хвост дашборда — обзорный: трейсбеки и длинные записи
+            # уплотняем до первой строки (полная версия в файлах логов).
+            first = str(message).rstrip("\n").split("\n", 1)[0]
+            if len(first) > 300:
+                first = first[:297] + "…"
+            self._log_tail.append(first)
 
         self._sink_id = _root_logger.add(
             _sink, level="INFO", format="{time:HH:mm:ss} {level} {message}"

@@ -988,6 +988,10 @@ class SolanaWsClient:
                 raise
             except (ConnectionClosed, OSError) as exc:
                 logger.warning("WS разрыв: {}", exc)
+            except RpcError as exc:
+                # Ожидаемый сбой сети/лимитов при реконнекте: одной строкой,
+                # без rich-traceback (он шумит в хвосте дашборда).
+                logger.warning("WS RPC-сбой (реконнект): {}", exc)
             except Exception as exc:
                 logger.opt(exception=exc).error("WS ошибка: {}", exc)
             finally:
