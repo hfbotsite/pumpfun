@@ -275,3 +275,50 @@ class TestDashboardActionHandler:
         result = asyncio.run(run())
         assert result["ok"] is False
         assert "не запущен" in str(result["error"])
+
+
+class TestShutdown:
+    """Полная остановка бота с дашборда."""
+
+    async def test_shutdown_calls_handler(self) -> None:
+        """POST /api/shutdown вызывает обработчик остановки."""
+        from core.dashboard import DashboardServer
+
+        called: list[bool] = []
+
+        async def on_shutdown() -> None:
+            called.append(True)
+
+        server = DashboardServer(
+            lambda: {}, host="127.0.0.1", port=0, on_shutdown=on_shutdown
+        )
+        await server.start()
+        try:
+            base = f"http://127.0.0.1:{server._runner.addresses[0][1]}"
+            async with aiohttp.ClientSession() as http:
+                async with http.post(f"{base}/api/shutdown") as resp:
+                    assert resp.status == 200
+                    assert (await resp.json())["ok"] is True
+            await asyncio.sleep(0.7)  # delayed-задача (0.5 c)
+            assert called == [True]
+        finally:
+            await server.close()
+
+    async def test_shutdown_disabled_returns_503(self) -> None:
+        """Без обработчика — 503 (кнопка не должна умирать молча)."""
+        server = DashboardServer(lambda: {}, host="127.0.0.1", port=0)
+        await server.start()
+        try:
+            base = f"http://127.0.0.1:{server._runner.addresses[0][1]}"
+            async with aiohttp.ClientSession() as http:
+                async with http.post(f"{base}/api/shutdown") as resp:
+                    assert resp.status == 503
+        finally:
+            await server.close()
+
+    def test_pipeline_shutdown_sets_stop_event(self) -> None:
+        """Обработчик пайплайна выставляет событие остановки."""
+        pipeline = LivePipeline(dry_run=True)
+        assert not pipeline._stop_event.is_set()
+        asyncio.run(pipeline._dashboard_shutdown())
+        assert pipeline._stop_event.is_set()

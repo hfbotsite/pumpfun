@@ -353,6 +353,7 @@ class LivePipeline:
                 self.dashboard_snapshot,
                 actions=self._dashboard_action,
                 backtest_runner=self._dashboard_backtest,
+                on_shutdown=self._dashboard_shutdown,
                 auth_user=settings.dashboard_user,
                 auth_password=settings.dashboard_password,
                 host=settings.dashboard_host,
@@ -1043,6 +1044,17 @@ class LivePipeline:
         finally:
             if fallback_client is not None:
                 await fallback_client.close()
+
+    async def _dashboard_shutdown(self) -> None:
+        """Полная остановка бота по запросу с веб-дашборда.
+
+        Graceful: подписки снимаются, ресурсы закрываются, процесс
+        завершается с кодом 0 (systemd с ``Restart=on-failure`` не
+        перезапустит чистую остановку).
+
+        """
+        logger.warning("Остановка бота: запрос с веб-дашборда")
+        self.request_stop()
 
     # -------------------------------------------------------------- Внутреннее
     async def _register_watchlist(self) -> None:

@@ -42,6 +42,9 @@ ActionHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 #: Обработчик запуска бэктеста (sample / csv / mint).
 BacktestRunner = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
+#: Обработчик полной остановки бота (запрошенной со страницы).
+ShutdownHandler = Callable[[], Awaitable[None]]
+
 #: Время жизни сессионного токена, c (12 часов).
 SESSION_TTL_SECONDS: float = 12 * 3600
 
@@ -135,7 +138,7 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
   <span class="badge" id="uptime">…</span>
   <span class="badge" id="poscount">…</span>
   <span id="conn">подключение…</span>
-  <span style="margin-left:auto"><button class="btn mini" id="logout">выйти</button></span>
+  <span style="margin-left:auto"><button class="btn mini danger" id="botstop" title="Полностью остановить процесс бота (дашборд тоже выключится)">ОСТАНОВИТЬ БОТА</button> <button class="btn mini" id="logout">выйти</button></span>
 </header>
 <main class="grid">
   <section class="card"><h2>Сессия</h2><div id="session"></div></section>
@@ -328,6 +331,18 @@ $('loginbtn').onclick=async()=>{
   if(d.ok&&d.token){TOKEN=d.token;localStorage.setItem('dash_token',TOKEN);hideLogin();connect();refreshOnce()}
   else{$('loginerr').textContent=d.error||'неверный логин или пароль'}
 };
+$('botstop').onclick=async()=>{
+  if(!confirm('ПОЛНОСТЬЮ остановить бота? Дашборд выключится вместе с ним. Перезапуск: systemctl start pumpbot (или вручную).'))return;
+  $('botstop').disabled=true;
+  try{
+    const r=await api('/api/shutdown',{method:'POST'});
+    if(r.status===401){showLogin();return}
+  }catch(e){}
+  if(es)es.close();
+  $('conn').textContent='⏹ БОТ ОСТАНОВЛЕН — перезапустите через терминал/systemd';
+  $('conn').style.color='var(--red)';
+  $('botstop').disabled=true;$('logout').disabled=true;
+};
 $('logout').onclick=()=>{TOKEN='';localStorage.removeItem('dash_token');if(es)es.close();showLogin()};
 
 const logEl=$('log');
@@ -506,6 +521,7 @@ class DashboardServer:
         log_tail_size: int = 200,
         actions: ActionHandler | None = None,
         backtest_runner: BacktestRunner | None = None,
+        on_shutdown: ShutdownHandler | None = None,
         auth_user: str = "",
         auth_password: str = "",
     ) -> None:
@@ -521,6 +537,8 @@ class DashboardServer:
                 без него действие вернёт 503.
             backtest_runner: Обработчик запуска бэктеста
                 (``POST /api/backtest``); без него — 503.
+            on_shutdown: Обработчик полной остановки бота
+                (``POST /api/shutdown``); без него — 503.
             auth_user: Логин дашборда; аутентификация включена, только
                 если задан и ``auth_user``, и ``auth_password``.
             auth_password: Пароль дашборда (из ``DASHBOARD_PASSWORD``).
@@ -532,8 +550,10 @@ class DashboardServer:
         self._log_tail: deque[str] = deque(maxlen=log_tail_size)
         self._runner: web.AppRunner | None = None
         self._sink_id: int | None = None
+        self._shutdown_task: asyncio.Task[None] | None = None
         self._actions = actions
         self._backtest_runner = backtest_runner
+        self._on_shutdown = on_shutdown
         self._auth_user = auth_user
         self._auth_password = auth_password
         self._tokens: dict[str, float] = {}  # token -> expiry (unix ts)
@@ -583,6 +603,7 @@ class DashboardServer:
         app.router.add_post("/api/action", self._action)
         app.router.add_post("/api/backtest", self._backtest)
         app.router.add_post("/api/log/clear", self._log_clear)
+        app.router.add_post("/api/shutdown", self._shutdown)
         app.router.add_get("/api/backtest/sample", self._backtest_sample)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -704,6 +725,40 @@ class DashboardServer:
         if not self._authorized(request):
             return self._unauthorized()
         self._log_tail.clear()
+        return web.json_response({"ok": True})
+
+    async def _shutdown(self, request: web.Request) -> web.Response:
+        """``POST /api/shutdown``: полная остановка бота (и дашборда).
+
+        Ответ отправляется сразу, затем запускается graceful-остановка
+        пайплайна. Процесс завершится с кодом 0 — при systemd-юните с
+        ``Restart=on-failure`` автоперезапуска не будет.
+
+        Args:
+            request: HTTP-запрос.
+
+        Returns:
+            JSON ``{ok: True}`` или 401/503.
+        """
+        if not self._authorized(request):
+            return self._unauthorized()
+        if self._on_shutdown is None:
+            return web.json_response(
+                {"ok": False, "error": "остановка недоступна"}, status=503
+            )
+        logger.warning("Остановка бота запрошена с веб-дашборда")
+
+        handler = self._on_shutdown
+
+        async def _delayed() -> None:
+            # даём ответу уйти в сеть до закрытия сервера
+            await asyncio.sleep(0.5)
+            try:
+                await handler()
+            except Exception:
+                logger.exception("Обработчик остановки упал")
+
+        self._shutdown_task = asyncio.create_task(_delayed())
         return web.json_response({"ok": True})
 
     async def _page(self, request: web.Request) -> web.Response:

@@ -292,7 +292,9 @@ WorkingDirectory=$PROJECT_DIR
 Environment=PYTHONUNBUFFERED=1
 Environment=BOT_ARGS=
 ExecStart=/bin/sh -ec 'exec "$PROJECT_DIR/.venv/bin/python" main.py \${BOT_ARGS}'
-Restart=always
+# on-failure: чистая остановка (код 0, кнопка дашборда) НЕ перезапускается,
+# падения (код != 0) — перезапускаются автоматически
+Restart=on-failure
 RestartSec=3
 
 [Install]
