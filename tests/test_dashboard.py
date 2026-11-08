@@ -316,9 +316,10 @@ class TestShutdown:
         finally:
             await server.close()
 
-    def test_pipeline_shutdown_sets_stop_event(self) -> None:
-        """Обработчик пайплайна выставляет событие остановки."""
+    def test_pipeline_shutdown_is_soft_stop(self) -> None:
+        """Остановка с дашборда — мягкая: торговля выключается, процесс живёт."""
         pipeline = LivePipeline(dry_run=True)
-        assert not pipeline._stop_event.is_set()
         asyncio.run(pipeline._dashboard_shutdown())
-        assert pipeline._stop_event.is_set()
+        assert pipeline._trading_active is False
+        # Процесс не помечен как полностью остановленный — дашборд живёт.
+        assert not pipeline._fully_stopped.is_set()

@@ -99,6 +99,7 @@ border-radius:6px;color:var(--fg);font-size:13px}
 #loginerr{color:var(--red);font-size:12px;min-height:16px}
 #action_status{font-size:12px;color:var(--dim);margin-left:10px}
 #log.frozen{outline:1px solid var(--blue)}
+.btn.mini.run{color:var(--green);border-color:var(--green)}
 .btn.bt-run,.btn.bt-stop{padding:8px 18px;font-size:14px;font-weight:700}
 .btn.bt-run{color:var(--green);border-color:var(--green)}
 .btn.bt-stop{color:var(--red);border-color:var(--red)}
@@ -138,7 +139,7 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
   <span class="badge" id="uptime">…</span>
   <span class="badge" id="poscount">…</span>
   <span id="conn">подключение…</span>
-  <span style="margin-left:auto"><button class="btn mini danger" id="botstop" title="Полностью остановить процесс бота (дашборд тоже выключится)">ОСТАНОВИТЬ БОТА</button> <button class="btn mini" id="logout">выйти</button></span>
+  <span style="margin-left:auto"><button class="btn mini run" id="botstart" disabled title="Возобновить торговлю после остановки">Старт бота</button> <button class="btn mini danger" id="botstop" title="Остановить торговлю (дашборд продолжает работать; открытые позиции — без управления)">Остановить торговлю</button> <button class="btn mini danger" id="botkill" title="Полностью остановить процесс бота (дашборд тоже выключится)">ОСТАНОВИТЬ БОТА</button> <button class="btn mini" id="logout">выйти</button></span>
 </header>
 <main class="grid">
   <section class="card"><h2>Сессия</h2><div id="session"></div></section>
@@ -222,6 +223,9 @@ const pctTxt=v=>`<span class="${cls(v)}">${sgn(v,1)}%</span>`;
 
 function render(d){
   const s=d.session||{};
+  const trading=(s.trading==='running');
+  $('botstart').disabled=trading;
+  $('botstoptrading').disabled=!trading;
   const mode=$('mode');
   mode.textContent=s.mode||'—';
   mode.className='badge '+(s.mode==='live'?'live':'dry');
@@ -331,9 +335,29 @@ $('loginbtn').onclick=async()=>{
   if(d.ok&&d.token){TOKEN=d.token;localStorage.setItem('dash_token',TOKEN);hideLogin();connect();refreshOnce()}
   else{$('loginerr').textContent=d.error||'неверный логин или пароль'}
 };
-$('botstop').onclick=async()=>{
+$('botstart').onclick=async()=>{
+  if(!confirm('Возобновить торговлю?'))return;
+  $('botstart').disabled=true;
+  try{
+    const r=await api('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'bot_start'})});
+    if(r.status===401){showLogin();return}
+    const d=await r.json();
+    if(!d.ok){$('conn').textContent='ошибка старта: '+(d.error||'?')}
+  }catch(e){}
+};
+$('botstoptrading').onclick=async()=>{
+  if(!confirm('Остановить торговлю? Открытые позиции останутся БЕЗ управления (TP/SL не сработают), пока не нажмёте «Старт бота». Дашборд продолжит работать.'))return;
+  $('botstoptrading').disabled=true;
+  try{
+    const r=await api('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'bot_stop'})});
+    if(r.status===401){showLogin();return}
+  }catch(e){}
+};
+$('botkill').onclick=async()=>{
   if(!confirm('ПОЛНОСТЬЮ остановить бота? Дашборд выключится вместе с ним. Перезапуск: systemctl start pumpbot (или вручную).'))return;
-  $('botstop').disabled=true;
+  $('botkill').disabled=true;
   try{
     const r=await api('/api/shutdown',{method:'POST'});
     if(r.status===401){showLogin();return}
@@ -341,7 +365,7 @@ $('botstop').onclick=async()=>{
   if(es)es.close();
   $('conn').textContent='⏹ БОТ ОСТАНОВЛЕН — перезапустите через терминал/systemd';
   $('conn').style.color='var(--red)';
-  $('botstop').disabled=true;$('logout').disabled=true;
+  $('botkill').disabled=true;$('logout').disabled=true;
 };
 $('logout').onclick=()=>{TOKEN='';localStorage.removeItem('dash_token');if(es)es.close();showLogin()};
 

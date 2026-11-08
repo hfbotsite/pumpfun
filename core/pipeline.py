@@ -207,6 +207,11 @@ class LivePipeline:
         self._pnl_curve: list[tuple[float, float]] = []
         self._backtest_stop: asyncio.Event | None = None
         self._backtest_run_id: str = ""
+        self._started: bool = False
+        self._trading_active: bool = False
+        self._consume_task: asyncio.Task[None] | None = None
+        self._fully_stopped = asyncio.Event()
+        self._portfolio: PortfolioManager | None = None
         self._rate_ts: float = 0.0
         self._rate_events: int = 0
         self._events_per_sec: float = 0.0
@@ -284,67 +289,27 @@ class LivePipeline:
             PipelineError: Если не удалось загрузить кошелёк или установить
                 WS-соединение.
         """
-        if self._running:
+        if self._started:
             return
+        self._started = True
 
-        self._rpc = SolanaRpcClient(latency=self._latency)
-        await self._rpc.start()
-        self._ws = SolanaWsClient(latency=self._latency)
-        self._resolver = TokenSecurityResolver(self._rpc)
-
-        executor: TraderExecutor
-        if self._dry_run:
-            executor = DryRunExecutor(latency=self._latency)
-        else:
-            try:
-                keypair = load_keypair()
-            except Exception as exc:
-                raise PipelineError(f"не удалось загрузить кошелёк: {exc}") from exc
-            executor = OrderExecutor(self._rpc, keypair, latency=self._latency)
-        await executor.start()
-        self._executor = executor
-
-        self._listener = PoolStreamListener(
-            self._rpc,
-            self._ws,
-            latency=self._latency,
-            on_pool_discovered=self._on_pool_discovered,
-        )
-
-        window = max(
-            settings.entry_window_seconds, settings.exit_window_seconds
-        )
         if self._db_path:
             self._store = PortfolioStore(self._db_path)
 
-        # Контур отбора: проверка каждого нового mint до торговых сигналов.
-        self._screening = TokenScreeningService(
-            self._resolver,
-            store=self._store,
-            on_rejected=self._on_screening_rejected,
-        )
-        self._screening.load_persisted()
-        await self._screening.start()
-
-        portfolio = PortfolioManager(
+        self._portfolio = PortfolioManager(
             max_concurrent_positions=self._max_concurrent_positions,
             store=self._store,
         )
-        restored = portfolio.load_open_positions()
+        restored = self._portfolio.load_open_positions()
         if restored:
             logger.warning(
                 "Рестарт с открытыми позициями: лимит {}, занято {} — новые "
                 "входы ограничены, пока восстановленные позиции не закроются",
                 self._max_concurrent_positions,
-                portfolio.open_count,
+                self._portfolio.open_count,
             )
-        self._trader = MomentumTrader(
-            executor=executor,
-            portfolio=portfolio,
-            security_provider=self._screening.provider,
-            indicators=StreamingIndicators(window),
-            capital_sol=self._capital_sol,
-        )
+
+        await self.start_trading()
 
         # Дашборд поднимается до сети: страница доступна сразу — в том числе
         # для диагностики, почему WS не подключается.
@@ -369,6 +334,66 @@ class LivePipeline:
                 )
                 self._dashboard = None
 
+
+    async def start_trading(self) -> None:
+        """Запускает торговлю: сеть, слушатель, движок, консьюмер.
+
+        Дашборд и БД продолжают работать и после :meth:`stop_trading` —
+        кнопка «Старт бота» вызывает этот метод повторно. Открытые
+        позиции остаются на месте и продолжают управляться.
+
+        Raises:
+            PipelineError: Если не удалось загрузить кошелёк.
+        """
+        if self._trading_active:
+            return
+        self._rpc = SolanaRpcClient(latency=self._latency)
+        await self._rpc.start()
+        self._ws = SolanaWsClient(latency=self._latency)
+        self._resolver = TokenSecurityResolver(self._rpc)
+
+        executor: TraderExecutor
+        if self._dry_run:
+            executor = DryRunExecutor(latency=self._latency)
+        else:
+            try:
+                keypair = load_keypair()
+            except Exception as exc:
+                raise PipelineError(f"не удалось загрузить кошелёк: {exc}") from exc
+            executor = OrderExecutor(self._rpc, keypair, latency=self._latency)
+        await executor.start()
+        self._executor = executor
+
+        self._listener = PoolStreamListener(
+            self._rpc,
+            self._ws,
+            latency=self._latency,
+            on_pool_discovered=self._on_pool_discovered,
+        )
+
+        # Контур отбора: проверка каждого нового mint до торговых сигналов.
+        self._screening = TokenScreeningService(
+            self._resolver,
+            store=self._store,
+            on_rejected=self._on_screening_rejected,
+        )
+        self._screening.load_persisted()
+        await self._screening.start()
+
+        window = max(
+            settings.entry_window_seconds, settings.exit_window_seconds
+        )
+        self._trader = MomentumTrader(
+            executor=executor,
+            portfolio=self._portfolio
+            if self._portfolio is not None
+            else PortfolioManager(),
+            security_provider=self._screening.provider,
+            indicators=StreamingIndicators(window),
+            capital_sol=self._capital_sol,
+        )
+
+        self._stop_event.clear()
         try:
             await self._listener.start()
             await self._register_watchlist()
@@ -379,28 +404,40 @@ class LivePipeline:
                 exc,
             )
 
+        self._consume_task = asyncio.create_task(self._consume_loop())
+        self._trading_active = True
+        self._running = True
         self.stats = PipelineStats(started_at=time.time())
         self._last_maintenance = time.monotonic()
-        self._running = True
         logger.info(
-            "Пайплайн запущен: mode={}, positions={}, watchlist={}",
+            "Торговля запущена: mode={}, positions={}, watchlist={}",
             "dry-run" if self._dry_run else "live",
             self._max_concurrent_positions,
             list(self._watchlist) or "-",
         )
 
     async def run(self) -> None:
-        """Запускает пайплайн и обрабатывает поток до остановки."""
+        """Живёт до полной остановки процесса (Ctrl+C / request_stop / stop).
+
+        Остановка торговли с дашборда (stop_trading) процесс не завершает —
+        дашборд остаётся работать, «Старт бота» возобновляет торговлю.
+        """
         await self.start()
         try:
-            await self._consume_loop()
+            await self._fully_stopped.wait()
         finally:
             await self.stop()
 
-    async def stop(self) -> None:
-        """Останавливает пайплайн и освобождает сетевые ресурсы."""
-        if not self._running and self._listener is None:
+    async def stop_trading(self) -> None:
+        """Останавливает торговлю: сеть, слушатель, движок, консьюмер.
+
+        Дашборд и БД продолжают работать. Открытые позиции сохраняются
+        (память + БД), но пока торговля остановлена — без управления
+        (TP/SL/стоп не срабатывают). Повторный вызов идемпотентен.
+        """
+        if not self._trading_active and self._consume_task is None:
             return
+        self._trading_active = False
         self._running = False
         self._stop_event.set()
 
@@ -409,25 +446,27 @@ class LivePipeline:
             if closed:
                 logger.info("Принудительно закрыто позиций: {}", len(closed))
 
-        if self._screening is not None:
-            with contextlib.suppress(Exception):
-                await self._screening.stop()
-            self._screening = None
-        if self._dashboard is not None:
-            with contextlib.suppress(Exception):
-                await self._dashboard.close()
-            self._dashboard = None
-
         open_positions = (
             self._trader.portfolio.all_positions() if self._trader else []
         )
         if open_positions:
             logger.warning(
-                "Остались открытые позиции ({}): {}",
+                "Торговля остановлена с открытыми позициями ({}): {} — "
+                "без управления, пока не нажмёте «Старт бота»",
                 len(open_positions),
                 [position.base_mint for position in open_positions],
             )
 
+        if self._consume_task is not None and not self._consume_task.done():
+            self._consume_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._consume_task
+        self._consume_task = None
+
+        if self._screening is not None:
+            with contextlib.suppress(Exception):
+                await self._screening.stop()
+            self._screening = None
         if self._listener is not None:
             with contextlib.suppress(Exception):
                 await self._listener.stop()
@@ -440,6 +479,22 @@ class LivePipeline:
             with contextlib.suppress(Exception):
                 await self._executor.close()
             self._executor = None
+        self._trader = None
+        self._resolver = None
+        logger.info("Торговля остановлена: {}", self.stats.as_dict())
+
+    async def stop(self) -> None:
+        """Полная остановка процесса: торговля, дашборд, БД, RPC.
+
+        Вызывается при завершении процесса (Ctrl+C, request_stop, stop()).
+        Кнопка «Остановить бота» на дашборде использует stop_trading() —
+        процесс и дашборд продолжают работать.
+        """
+        await self.stop_trading()
+        if self._dashboard is not None:
+            with contextlib.suppress(Exception):
+                await self._dashboard.close()
+            self._dashboard = None
         if self._store is not None:
             with contextlib.suppress(Exception):
                 self._store.close()
@@ -448,13 +503,14 @@ class LivePipeline:
             with contextlib.suppress(Exception):
                 await self._rpc.close()
             self._rpc = None
-
+        self._fully_stopped.set()
         logger.info("Пайплайн остановлен: {}", self.stats.as_dict())
         logger.info("Латентность: {}", self._latency.summary())
 
     def request_stop(self) -> None:
-        """Просит пайплайн завершиться после текущего события."""
+        """Просит пайплайн полностью завершиться (сигнал/закрытие процесса)."""
         self._stop_event.set()
+        self._fully_stopped.set()
 
     # ------------------------------------------------------------- Дашборд
     def dashboard_snapshot(self) -> dict[str, object]:
@@ -536,6 +592,7 @@ class LivePipeline:
         return {
             "ts": now,
             "session": {
+                "trading": "running" if self._trading_active else "stopped",
                 "mode": "dry-run" if self._dry_run else "live",
                 "network": settings.solana_network,
                 "venue": settings.execution_venue,
@@ -643,6 +700,30 @@ class LivePipeline:
             )
         return tracked.to_pool_info(), tracked.creator, None
 
+    async def _dashboard_bot_lifecycle(self, action: str) -> dict[str, object] | None:
+        """Старт/Останов торговли; ``None`` — действие не lifecycle-овое.
+
+        Args:
+            action: Имя действия.
+
+        Returns:
+            Словарь результата для lifecycle-действий или ``None``.
+        """
+        if action == "bot_stop":
+            if not self._trading_active:
+                return {"ok": False, "error": "торговля уже остановлена"}
+            await self.stop_trading()
+            return {"ok": True, "state": "stopped"}
+        if action == "bot_start":
+            if self._trading_active:
+                return {"ok": False, "error": "бот уже работает"}
+            try:
+                await self.start_trading()
+            except PipelineError as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True, "state": "running"}
+        return None
+
     async def _dashboard_action(self, payload: dict[str, object]) -> dict[str, object]:
         """Обрабатывает ручные действия дашборда (кнопки сделок).
 
@@ -660,6 +741,10 @@ class LivePipeline:
         """
         action = str(payload.get("action", "")).strip()
         mint = str(payload.get("mint", "")).strip()
+        lifecycle = await self._dashboard_bot_lifecycle(action)
+        if lifecycle is not None:
+            return lifecycle
+
         if action not in ("sell", "average", "sell_all"):
             return {"ok": False, "error": f"неизвестное действие: {action or 'пусто'}"}
 
@@ -1046,15 +1131,14 @@ class LivePipeline:
                 await fallback_client.close()
 
     async def _dashboard_shutdown(self) -> None:
-        """Полная остановка бота по запросу с веб-дашборда.
+        """Останавливает торговлю по запросу с дашборда (процесс живёт).
 
-        Graceful: подписки снимаются, ресурсы закрываются, процесс
-        завершается с кодом 0 (systemd с ``Restart=on-failure`` не
-        перезапустит чистую остановку).
+        Подписки закрываются — расход кредитов Helius прекращается.
+        Дашборд остаётся работать; «Старт бота» возобновляет торговлю.
 
         """
-        logger.warning("Остановка бота: запрос с веб-дашборда")
-        self.request_stop()
+        logger.warning("Остановка торговли: запрос с веб-дашборда")
+        await self.stop_trading()
 
     # -------------------------------------------------------------- Внутреннее
     async def _register_watchlist(self) -> None:
