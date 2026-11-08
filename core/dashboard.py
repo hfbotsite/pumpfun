@@ -99,6 +99,7 @@ border-radius:6px;color:var(--fg);font-size:13px}
 #loginerr{color:var(--red);font-size:12px;min-height:16px}
 #action_status{font-size:12px;color:var(--dim);margin-left:10px}
 #log.frozen{outline:1px solid var(--blue)}
+#mode{cursor:pointer}#mode:hover{filter:brightness(1.3)}
 .btn.mini.run{color:var(--green);border-color:var(--green)}
 .btn.bt-run,.btn.bt-stop{padding:8px 18px;font-size:14px;font-weight:700}
 .btn.bt-run{color:var(--green);border-color:var(--green)}
@@ -139,7 +140,7 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
   <span class="badge" id="uptime">…</span>
   <span class="badge" id="poscount">…</span>
   <span id="conn">подключение…</span>
-  <span style="margin-left:auto"><button class="btn mini run" id="botmode" title="Переключить режим исполнения (dry-run ↔ LIVE)">→ LIVE</button> <button class="btn mini run" id="botstart" disabled title="Возобновить торговлю после остановки">Старт бота</button> <button class="btn mini danger" id="botstoptrading" title="Остановить торговлю (дашборд продолжает работать; открытые позиции — без управления)">Остановить торговлю</button> <button class="btn mini danger" id="botkill" title="Полностью остановить процесс бота (дашборд тоже выключится)">ОСТАНОВИТЬ БОТА</button> <button class="btn mini" id="logout">выйти</button></span>
+  <span style="margin-left:auto"><button class="btn mini run" id="botstart" disabled title="Возобновить торговлю после остановки">Старт бота</button> <button class="btn mini danger" id="botstoptrading" title="Остановить торговлю (дашборд продолжает работать; открытые позиции — без управления)">Остановить торговлю</button> <button class="btn mini danger" id="botkill" title="Полностью остановить процесс бота (дашборд тоже выключится)">ОСТАНОВИТЬ БОТА</button> <button class="btn mini" id="logout">выйти</button></span>
 </header>
 <main class="grid">
   <section class="card"><h2>Сессия</h2><div id="session"></div></section>
@@ -226,11 +227,11 @@ function render(d){
   const trading=(s.trading==='running');
   if($('botstart'))$('botstart').disabled=trading;
   if($('botstoptrading'))$('botstoptrading').disabled=!trading;
-  botTargetMode=(s.mode==='live')?'dry':'live';
-  if($('botmode')&&!$('botmode').disabled)$('botmode').textContent='→ '+(botTargetMode==='live'?'LIVE':'DRY-RUN');
+  currentMode=(s.mode==='live')?'live':'dry';
   const mode=$('mode');
   mode.textContent=s.mode||'—';
   mode.className='badge '+(s.mode==='live'?'live':'dry');
+  mode.title='Нажмите — переключить в '+((currentMode==='live')?'DRY-RUN':'LIVE');
   $('network').textContent=s.network||'—';
   $('venue').textContent='venue: '+(s.venue||'—');
   $('uptime').textContent='uptime '+dur(s.uptime_s||0);
@@ -337,22 +338,23 @@ $('loginbtn').onclick=async()=>{
   if(d.ok&&d.token){TOKEN=d.token;localStorage.setItem('dash_token',TOKEN);hideLogin();connect();refreshOnce()}
   else{$('loginerr').textContent=d.error||'неверный логин или пароль'}
 };
-let botTargetMode='dry';
-$('botmode').onclick=async()=>{
-  const target=(botTargetMode==='dry')?'live':'dry';
+$('mode').onclick=async()=>{
+  const target=(currentMode==='live')?'dry':'live';
   const msg=(target==='live')
-    ?'ПЕРЕВЕСТИ В LIVE? Ордера будут исполняться РЕАЛЬНЫМ SOL с вашего кошелька. Открытые позиции должны быть закрыты.'
-    :'Перевести бота в DRY-RUN (бумажная торговля)?';
+   ?'ПЕРЕВЕСТИ В LIVE? Ордера будут исполняться РЕАЛЬНЫМ SOL с вашего кошелька. Требуются настроенный кошелёк и отсутствие открытых позиций.'
+   :'Перевести бота в DRY-RUN (бумажная торговля)?';
   if(!confirm(msg))return;
-  $('botmode').disabled=true;
+  const badge=$('mode');
+  badge.style.opacity='0.5';
   try{
     const r=await api('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'bot_mode',mode:target})});
     if(r.status===401){showLogin();return}
     const d=await r.json();
-    if(!d.ok){$('conn').textContent='ошибка переключения: '+(d.error||'?');$('botmode').disabled=false;return}
+    if(!d.ok){$('conn').textContent='ошибка: '+(d.error||'?');badge.style.opacity='1';return}
+    refreshOnce();
   }catch(e){}
-  refreshOnce();$('botmode').disabled=false;
+  badge.style.opacity='1';
 };
 $('botstart').onclick=async()=>{
   if(!confirm('Возобновить торговлю?'))return;
@@ -453,7 +455,7 @@ $('positions').onclick=async e=>{
 };
 
 // --- Backtest ---
-let btMode='mint',btBusy=false,btRunId='';
+let btMode='mint',btBusy=false,btRunId='',currentMode='dry';
 function setBtMode(m){btMode=m;
  $('bt_mode_mint').classList.toggle('active',m==='mint');
  $('bt_mode_csv').classList.toggle('active',m==='csv');
