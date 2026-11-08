@@ -96,10 +96,6 @@ border-radius:6px;color:var(--fg);font-size:13px}
 #loginerr{color:var(--red);font-size:12px;min-height:16px}
 #action_status{font-size:12px;color:var(--dim);margin-left:10px}
 #log.frozen{outline:1px solid var(--blue)}
-.backtab{display:block;margin:16px auto 0;width:190px;height:30px;border:none;
-border-radius:190px 190px 0 0;background:linear-gradient(180deg,#58a6ff,#1f6feb);
-color:#fff;font-weight:700;letter-spacing:.14em;font-size:13px;cursor:pointer}
-.backtab:hover{filter:brightness(1.15)}
 #backtest{display:none}
 .btrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0}
 .btrow label{color:var(--dim);font-size:12px}
@@ -156,49 +152,53 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
   <section class="card"><h2>Поток сделок</h2><div id="stream"></div></section>
   <section class="card"><h2>Отбор токенов</h2><div id="screen"></div></section>
   <section class="card"><h2>Латентность (мс, p50 / p95)</h2><div id="latency">—</div></section>
-  <section class="card wide"><div class="poshead"><h2>Лог (хвост)</h2><span class="spacer"></span><span id="loghint" style="color:var(--dim);font-size:11px"></span><button class="btn mini" id="logcopy" title="Скопировать весь видимый лог">копировать</button></div><pre id="log">—</pre></section>
-
-  <button class="backtab" id="backtab">⌗ BACKTEST</button>
-  <section class="card wide" id="backtest" style="display:none">
+    <section class="card wide">
     <div class="poshead">
       <h2>Бэктест стратегии на исторических сделках</h2>
       <span class="spacer"></span>
-      <button class="btn mini" id="bt_sample" title="Заполнить форму демонстрационным CSV">демо-CSV</button>
-      <button class="btn" id="bt_run">ЗАПУСТИТЬ</button>
+      <button class="btn" id="backtab">развернуть ▸</button>
     </div>
-    <div class="btrow">
-      <span class="modebadge active" id="bt_mode_mint" data-mode="mint">Ссылка pump.fun</span>
-      <span class="modebadge" id="bt_mode_csv" data-mode="csv">CSV-текст</span>
-      <span style="color:var(--dim);font-size:12px">движок: живая стратегия + dry-run исполнитель на исторических сделках</span>
-    </div>
-    <div class="btrow" id="bt_url_row">
-      <label>ссылка / mint:</label>
-      <input id="bt_url" style="flex:1;min-width:280px" placeholder="https://pump.fun/coin/<MINT> или адрес mint">
-      <label>транзакций:</label>
-      <input id="bt_maxtx" type="number" value="500" min="50" max="1000" style="width:90px">
-    </div>
-    <div id="bt_csv_row" style="display:none">
+    <div id="backtest" style="display:none">
       <div class="btrow">
-        <label>начальный резерв SOL:</label>
-        <input id="bt_initsol" type="number" value="90" style="width:90px">
-        <label>резерв токенов:</label>
-        <input id="bt_inittoken" type="number" value="600000000" style="width:150px">
+        <span class="modebadge active" id="bt_mode_mint" data-mode="mint">Ссылка pump.fun</span>
+        <span class="modebadge" id="bt_mode_csv" data-mode="csv">CSV-текст</span>
+        <span style="color:var(--dim);font-size:12px">движок: живая стратегия + dry-run исполнитель на исторических сделках</span>
       </div>
-      <textarea id="bt_csv" rows="6" placeholder="signature,pool_address,base_mint,dex,side,sol_amount,token_amount,wallet,timestamp"></textarea>
+      <div class="btrow" id="bt_url_row">
+        <label>ссылка / mint:</label>
+        <input id="bt_url" style="flex:1;min-width:280px" placeholder="https://pump.fun/coin/<MINT> или адрес mint">
+        <label>транзакций:</label>
+        <input id="bt_maxtx" type="number" value="500" min="50" max="1000" style="width:90px">
+      </div>
+      <div id="bt_csv_row" style="display:none">
+        <div class="btrow">
+          <label>начальный резерв SOL:</label>
+          <input id="bt_initsol" type="number" value="90" style="width:90px">
+          <label>резерв токенов:</label>
+          <input id="bt_inittoken" type="number" value="600000000" style="width:150px">
+        </div>
+        <textarea id="bt_csv" rows="6" placeholder="signature,pool_address,base_mint,dex,side,sol_amount,token_amount,wallet,timestamp"></textarea>
+      </div>
+      <div class="btrow">
+        <label>размер входа, SOL:</label>
+        <input id="bt_amount" type="number" value="0.5" step="0.1" style="width:80px">
+        <label>окно входа, c:</label>
+        <input id="bt_entryw" type="number" value="5" style="width:60px">
+        <label>окно выхода, c:</label>
+        <input id="bt_exitw" type="number" value="2" style="width:60px">
+        <label>макс. позиций:</label>
+        <input id="bt_maxpos" type="number" value="1" style="width:50px">
+        <span class="spacer"></span>
+        <span id="bt_status" style="color:var(--dim);font-size:12px"></span>
+        <button class="btn mini" id="bt_sample" title="Заполнить форму демонстрационным CSV">демо-CSV</button>
+        <button class="btn danger" id="bt_run">ЗАПУСТИТЬ</button>
+      </div>
+      <div id="bt_results"></div>
     </div>
-    <div class="btrow">
-      <label>размер входа, SOL:</label>
-      <input id="bt_amount" type="number" value="0.5" step="0.1" style="width:80px">
-      <label>окно входа, c:</label>
-      <input id="bt_entryw" type="number" value="5" style="width:60px">
-      <label>окно выхода, c:</label>
-      <input id="bt_exitw" type="number" value="2" style="width:60px">
-      <label>макс. позиций:</label>
-      <input id="bt_maxpos" type="number" value="1" style="width:50px">
-    </div>
-    <div id="bt_status" style="min-height:18px;color:var(--dim);font-size:12px"></div>
-    <div id="bt_results"></div>
   </section>
+
+<section class="card wide"><div class="poshead"><h2>Лог (хвост)</h2><span class="spacer"></span><span id="loghint" style="color:var(--dim);font-size:11px"></span><button class="btn mini" id="logcopy" title="Скопировать весь видимый лог">копировать</button></div><pre id="log">—</pre></section>
+
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -409,7 +409,7 @@ $('bt_mode_mint').onclick=()=>setBtMode('mint');
 $('bt_mode_csv').onclick=()=>setBtMode('csv');
 $('backtab').onclick=()=>{const b=$('backtest');const show=b.style.display==='none';
  b.style.display=show?'block':'none';
- $('backtab').textContent=show?'⌗ BACKTEST ▴':'⌗ BACKTEST';};
+ $('backtab').textContent=show?'свернуть ▴':'развернуть ▸';};
 $('bt_sample').onclick=async()=>{try{
   const r=await api('/api/backtest/sample');if(r.status===401){showLogin();return}
   setBtMode('csv');$('bt_csv').value=await r.text();
