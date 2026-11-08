@@ -392,7 +392,7 @@ $('botkill').onclick=async()=>{
     if(r.status===401){showLogin();return}
   }catch(e){}
   if(es)es.close();
-  $('conn').textContent='⏹ БОТ ОСТАНОВЛЕН — перезапустите через терминал/systemd';
+  $('conn').textContent='⏹ торговля остановлена — возобновите кнопкой «Старт бота»';
   $('conn').style.color='var(--red)';
   $('botkill').disabled=true;$('logout').disabled=true;
 };
