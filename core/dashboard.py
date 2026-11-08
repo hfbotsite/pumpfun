@@ -139,7 +139,7 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
   <span class="badge" id="uptime">…</span>
   <span class="badge" id="poscount">…</span>
   <span id="conn">подключение…</span>
-  <span style="margin-left:auto"><button class="btn mini run" id="botstart" disabled title="Возобновить торговлю после остановки">Старт бота</button> <button class="btn mini danger" id="botstop" title="Остановить торговлю (дашборд продолжает работать; открытые позиции — без управления)">Остановить торговлю</button> <button class="btn mini danger" id="botkill" title="Полностью остановить процесс бота (дашборд тоже выключится)">ОСТАНОВИТЬ БОТА</button> <button class="btn mini" id="logout">выйти</button></span>
+  <span style="margin-left:auto"><button class="btn mini run" id="botstart" disabled title="Возобновить торговлю после остановки">Старт бота</button> <button class="btn mini danger" id="botstoptrading" title="Остановить торговлю (дашборд продолжает работать; открытые позиции — без управления)">Остановить торговлю</button> <button class="btn mini danger" id="botkill" title="Полностью остановить процесс бота (дашборд тоже выключится)">ОСТАНОВИТЬ БОТА</button> <button class="btn mini" id="logout">выйти</button></span>
 </header>
 <main class="grid">
   <section class="card"><h2>Сессия</h2><div id="session"></div></section>
@@ -224,8 +224,8 @@ const pctTxt=v=>`<span class="${cls(v)}">${sgn(v,1)}%</span>`;
 function render(d){
   const s=d.session||{};
   const trading=(s.trading==='running');
-  $('botstart').disabled=trading;
-  $('botstoptrading').disabled=!trading;
+  if($('botstart'))$('botstart').disabled=trading;
+  if($('botstoptrading'))$('botstoptrading').disabled=!trading;
   const mode=$('mode');
   mode.textContent=s.mode||'—';
   mode.className='badge '+(s.mode==='live'?'live':'dry');
