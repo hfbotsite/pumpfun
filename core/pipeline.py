@@ -205,6 +205,8 @@ class LivePipeline:
         self._dashboard: DashboardServer | None = None
 
         self._pnl_curve: list[tuple[float, float]] = []
+        self._backtest_stop: asyncio.Event | None = None
+        self._backtest_run_id: str = ""
         self._rate_ts: float = 0.0
         self._rate_events: int = 0
         self._events_per_sec: float = 0.0
@@ -768,6 +770,7 @@ class LivePipeline:
         entry_window: float,
         exit_window: float,
         max_positions: int,
+        cancel_event: asyncio.Event | None = None,
     ) -> dict[str, object]:
         """Прогоняет события через живую стратегию и возвращает отчёт.
 
@@ -806,9 +809,12 @@ class LivePipeline:
             max_concurrent_positions=max_positions,
             entry_window_seconds=entry_window,
             exit_window_seconds=exit_window,
+            cancel_event=cancel_event,
         )
         report = await backtester.run(scenario)
-        return {"ok": True, "report": report.to_dict()}
+        report_dict = report.to_dict()
+        report_dict["stopped"] = backtester.was_cancelled
+        return {"ok": True, "report": report_dict}
 
     async def _dashboard_backtest(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Запускает бэктест по запросу из дашборда.
@@ -846,6 +852,16 @@ class LivePipeline:
     ) -> dict[str, Any]:
         """Основная логика режимов бэктеста (см. _dashboard_backtest)."""
         mode = str(payload.get("mode", "csv")).strip()
+        if mode == "stop":
+            run_id = str(payload.get("run_id", ""))
+            if self._backtest_stop is None or run_id != self._backtest_run_id:
+                return {"ok": False, "error": "активного запуска бэктеста нет"}
+            self._backtest_stop.set()
+            return {"ok": True}
+        run_id = str(payload.get("run_id", "")) or str(time.time_ns())
+        self._backtest_stop = asyncio.Event()
+        self._backtest_run_id = run_id
+
         try:
             trade_amount_sol = float(
                 payload.get("trade_amount_sol", settings.trade_amount_sol)
@@ -893,6 +909,7 @@ class LivePipeline:
                 entry_window=entry_window,
                 exit_window=exit_window,
                 max_positions=max_positions,
+                cancel_event=self._backtest_stop,
             )
 
         if mode == "mint":
@@ -1021,6 +1038,7 @@ class LivePipeline:
                 entry_window=entry_window,
                 exit_window=exit_window,
                 max_positions=max_positions,
+                cancel_event=self._backtest_stop,
             )
         finally:
             if fallback_client is not None:

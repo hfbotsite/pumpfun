@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from analytics.replay import ReplayPoolState, ReplayScenario
@@ -268,6 +269,7 @@ class Backtester:
         exit_window_seconds: float | None = None,
         retry_cooldown_seconds: float = 0.0,
         initial_capital_sol: float | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> None:
         """Инициализирует бэктестер.
 
@@ -285,6 +287,8 @@ class Backtester:
                 по умолчанию 0 — сбой ордера означает лишь отсутствие входа.
             initial_capital_sol: Капитал для расчёта просадки, SOL (по
                 умолчанию ``trade_amount_sol * max_concurrent_positions``).
+            cancel_event: Событие кооперативной остановки: при установке
+                цикл завершается и отчёт строится по пройденной части.
         """
         self._strategy = strategy
         self._executor: TraderExecutor = (
@@ -312,6 +316,8 @@ class Backtester:
             if initial_capital_sol is None
             else initial_capital_sol
         )
+        self._cancel_event = cancel_event
+        self._was_cancelled = False
 
     # --------------------------------------------------------------- Свойства
     @property
@@ -339,11 +345,17 @@ class Backtester:
         processed = 0
 
         for event in scenario.events:
+            if self._cancel_event is not None and self._cancel_event.is_set():
+                self._was_cancelled = True
+                break
             if event.pool_address != scenario.pool.pool_address:
                 continue
             pool = state.apply(event)
             await trader.process_event(event, pool, creator=scenario.pool.creator)
             processed += 1
+            if processed % 25 == 0:
+                # Отдаём управление loop'у: SSE живёт, кнопка «Стоп» заметна.
+                await asyncio.sleep(0)
 
         trader.close_all(exit_reason=BACKTEST_END_REASON)
         return BacktestReport.from_portfolio(
@@ -355,6 +367,11 @@ class Backtester:
             closed_trades=trader.portfolio.closed_trades,
             initial_capital_sol=self._initial_capital_sol,
         )
+
+    @property
+    def was_cancelled(self) -> bool:
+        """Был ли прогон остановлен по cancel_event (частичный отчёт)."""
+        return self._was_cancelled
 
     def build_trader(self, security: TokenSecurity) -> MomentumTrader:
         """Собирает движок решений с подменёнными внешними зависимостями.

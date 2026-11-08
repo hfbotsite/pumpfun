@@ -192,6 +192,7 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
         <span id="bt_status" style="color:var(--dim);font-size:12px"></span>
         <button class="btn mini" id="bt_sample" title="Заполнить форму демонстрационным CSV">демо-CSV</button>
         <button class="btn danger" id="bt_run">ЗАПУСТИТЬ</button>
+        <button class="btn mini danger" id="bt_stop" disabled title="Остановить прогон и показать статистику по пройденной части">ОСТАНОВИТЬ</button>
       </div>
       <div id="bt_results"></div>
     </div>
@@ -399,7 +400,7 @@ $('positions').onclick=async e=>{
 };
 
 // --- Backtest ---
-let btMode='mint',btBusy=false;
+let btMode='mint',btBusy=false,btRunId='';
 function setBtMode(m){btMode=m;
  $('bt_mode_mint').classList.toggle('active',m==='mint');
  $('bt_mode_csv').classList.toggle('active',m==='csv');
@@ -451,19 +452,34 @@ function renderBacktest(r){
 
 $('bt_run').onclick=async()=>{
  if(btBusy||busy)return;
- btBusy=true;busy=true;$('bt_run').disabled=true;
- $('bt_status').textContent='гоняю бэктест… (большие истории могут занять время)';
+ busy=true;btBusy=true;$('bt_run').disabled=true;$('bt_stop').disabled=false;
+ const p=btCollect();
+ btRunId=Date.now()+'-'+Math.random().toString(36).slice(2,7);
+ p.run_id=btRunId;
+ $('bt_status').textContent='гоняю бэктест… (большие истории могут занять время — есть кнопка ОСТАНОВИТЬ)';
  $('bt_results').innerHTML='';
  try{
-  const r=await api('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(btCollect())});
+  const r=await api('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
   if(r.status===401){showLogin();return}
   const d=await r.json();
   if(!d.ok){$('bt_status').innerHTML=`<span class="neg">${esc(d.error||'ошибка')}</span>`}
-  else{$('bt_status').textContent=`готово: событий ${d.report.events}, длительность ${dur(d.report.duration_seconds)}`;
-   renderBacktest(d.report)}
+  else{
+   const rep=d.report;
+   $('bt_status').textContent=(rep.stopped?'⏹ остановлено — статистика по пройденной части: ':'готово: ')
+    +`событий ${rep.events}, сделок ${rep.trades}, PnL ${sgn(rep.pnl_sol,3)} SOL`;
+   renderBacktest(rep);
+  }
  }catch(e){$('bt_status').textContent='ошибка сети'}
+ $('bt_stop').disabled=true;
  btBusy=false;busy=false;$('bt_run').disabled=false;
+};
+$('bt_stop').onclick=async()=>{
+ if(!btRunId||$('bt_stop').disabled)return;
+ try{
+  await api('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({mode:'stop',run_id:btRunId})});
+  $('bt_status').textContent='остановка…';
+ }catch(e){}
 };
 
 async function boot(){

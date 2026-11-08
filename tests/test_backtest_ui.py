@@ -15,8 +15,10 @@ from analytics.replay import (
     parse_events_csv_text,
 )
 from core.client import RpcError
+from core.dry_run import DryRunExecutor
 from core.pipeline import LivePipeline
 from models.trade_data import DEXType, TokenSecurity
+from tests.conftest import BASE_MINT, POOL_ADDRESS
 from tests.test_backtester import build_pump_events
 
 
@@ -143,16 +145,15 @@ class TestBacktestHandler:
 
 def test_report_to_dict_shape() -> None:
     """to_dict отдаёт все ключевые поля для рендера в браузере."""
-    path_events = build_pump_events()
     scenario = ReplayScenario(
         pool=ReplayPoolConfig(
-            pool_address="P1",
-            base_mint="M1",
+            pool_address=POOL_ADDRESS,
+            base_mint=BASE_MINT,
             dex=DEXType.PUMP_FUN,
             quote_reserve=90_000_000_000,
             base_reserve=600_000_000_000_000,
         ),
-        events=tuple(path_events),
+        events=tuple(build_pump_events()),
         security=TokenSecurity(lp_burned_pct=100.0),
     )
     report = asyncio.run(
@@ -166,6 +167,7 @@ def test_report_to_dict_shape() -> None:
     ):
         assert key in data, key
     assert isinstance(data["exit_reasons"], dict)
+    assert data["trades"] >= 1  # сценарий импульса обязан давать сделки
 
 
 class TestMintRpcFailure:
@@ -191,3 +193,107 @@ class TestMintRpcFailure:
         error = str(result["error"])
         # Fallback на публичный RPC тоже не даёт событий в песочнице без сети:
         assert "мало событий" in error or "Helius RPC недоступен" in error
+
+
+class TestBacktestCancellation:
+    """Кооперативная остановка бэктеста с частичной статистикой."""
+
+    def test_cancel_before_run_zero_events(self) -> None:
+        """Событие отмены, установленное до прогона, — 0 событий, отчёт валиден."""
+        cancel = asyncio.Event()
+        cancel.set()
+        backtester = Backtester(cancel_event=cancel)
+        scenario = ReplayScenario(
+            pool=ReplayPoolConfig(
+                pool_address=POOL_ADDRESS,
+                base_mint=BASE_MINT,
+                dex=DEXType.PUMP_FUN,
+                quote_reserve=90_000_000_000,
+                base_reserve=600_000_000_000_000,
+            ),
+            events=tuple(build_pump_events()),
+            security=TokenSecurity(lp_burned_pct=100.0),
+        )
+        report = asyncio.run(backtester.run(scenario))
+        assert backtester.was_cancelled is True
+        assert report.events == 0
+        assert report.trades == 0
+
+    def test_cancel_mid_run_partial_report(self) -> None:
+        """Остановка в середине — отчёт по части событий, позиции закрыты."""
+        cancel = asyncio.Event()
+
+        class CancelAfterEntries(DryRunExecutor):
+            """Ставит cancel_event после N-й покупки."""
+
+            def __init__(self, after: int) -> None:
+                super().__init__()
+                self._after = after
+                self._buys = 0
+
+            async def execute_buy(self, order):  # type: ignore[override]
+                result = await super().execute_buy(order)
+                if result.success:
+                    self._buys += 1
+                    if self._buys >= self._after:
+                        cancel.set()
+                return result
+
+        all_events = build_pump_events()
+        backtester = Backtester(
+            executor=CancelAfterEntries(after=1),
+            trade_amount_sol=0.5,
+            entry_window_seconds=5.0,
+            exit_window_seconds=2.0,
+            cancel_event=cancel,
+        )
+        scenario = ReplayScenario(
+            pool=ReplayPoolConfig(
+                pool_address=POOL_ADDRESS,
+                base_mint=BASE_MINT,
+                dex=DEXType.PUMP_FUN,
+                quote_reserve=90_000_000_000,
+                base_reserve=600_000_000_000_000,
+            ),
+            events=tuple(all_events),
+            security=TokenSecurity(lp_burned_pct=100.0),
+        )
+        report = asyncio.run(backtester.run(scenario))
+        assert backtester.was_cancelled is True
+        assert 0 < report.events < len(all_events)
+        assert report.trades >= 0
+
+
+class TestBacktestStopMode:
+    """Режим stop в _dashboard_backtest (машина состояний запуска)."""
+
+    def test_stop_without_run_rejected(self) -> None:
+        """Стоп без активного запуска — отказ."""
+        pipeline = LivePipeline(dry_run=True)
+        result = asyncio.run(
+            pipeline._dashboard_backtest({"mode": "stop", "run_id": "abc"})
+        )
+        assert result["ok"] is False
+        assert "активного запуска" in str(result["error"])
+
+    def test_stop_with_matching_run_id_sets_event(self) -> None:
+        """Совпадающий run_id ставит событие отмены."""
+        pipeline = LivePipeline(dry_run=True)
+        pipeline._backtest_stop = asyncio.Event()
+        pipeline._backtest_run_id = "run-42"
+        result = asyncio.run(
+            pipeline._dashboard_backtest({"mode": "stop", "run_id": "run-42"})
+        )
+        assert result["ok"] is True
+        assert pipeline._backtest_stop.is_set()
+
+    def test_stop_with_wrong_run_id_rejected(self) -> None:
+        """Чужой run_id — отказ (защита от ложной остановки)."""
+        pipeline = LivePipeline(dry_run=True)
+        pipeline._backtest_stop = asyncio.Event()
+        pipeline._backtest_run_id = "run-42"
+        result = asyncio.run(
+            pipeline._dashboard_backtest({"mode": "stop", "run_id": "other"})
+        )
+        assert result["ok"] is False
+        assert not pipeline._backtest_stop.is_set()
