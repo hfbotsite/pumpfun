@@ -1081,11 +1081,12 @@ class SolanaWsClient:
     async def _resubscribe_all(self) -> None:
         """Восстанавливает все ранее активные подписки после реконнекта."""
         for record in self._records.values():
-            was_active = record.active
+            # После реконнекта сервер не помнит НИ ОДНОЙ подписки —
+            # переподписываем все записи (в т.ч. неудавшиеся ранее).
             record.server_id = None
             record.active = False
-            if was_active:
-                await self._issue_subscription(record)
+            await self._issue_subscription(record)
+            await asyncio.sleep(0.05)  # без шторма подписок при реконнекте
 
     async def _issue_subscription(self, record: _Subscription) -> None:
         """Отправляет запрос подписки и регистрирует server id.
@@ -1096,6 +1097,10 @@ class SolanaWsClient:
         request_id = self._next_request_id()
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Any] = loop.create_future()
+        # Таймаут-обработчик ниже НЕ удаляет future из _pending: при разрыве
+        # _fail_pending выставит ему RpcError, и asyncio заспамит
+        # «Future exception was never retrieved». Подавляем заранее.
+        future.add_done_callback(lambda f: f.cancelled() or f.exception())
         self._pending[request_id] = future
         await self._send_raw(
             {"jsonrpc": "2.0", "id": request_id, "method": record.kind.value,
@@ -1103,9 +1108,27 @@ class SolanaWsClient:
         )
         try:
             server_id = await asyncio.wait_for(future, timeout=self._request_timeout)
-        except (TimeoutError, RpcError) as exc:
-            logger.warning("WS: подписка {} не установлена: {}", record.kind.value, exc)
+        except RpcError as exc:
+            self._pending.pop(request_id, None)
+            logger.warning(
+                "WS: подписка {} отклонена сервером: {}",
+                record.kind.value,
+                exc,
+            )
             return
+        except TimeoutError:
+            # Ответа нет = соединение наполовину мертво (pong/push не идут).
+            # Рвём сокет: реконнект-цикл переподключится и переподпишется.
+            self._pending.pop(request_id, None)
+            logger.warning(
+                "WS: подписка {} не подтверждена за {} c — переподключение",
+                record.kind.value,
+                self._request_timeout,
+            )
+            await self._close_socket()
+            raise RpcError(
+                f"WS: подписка {record.kind.value} не подтверждена (таймаут)"
+            ) from None
         record.server_id = int(server_id)
         record.active = True
         self._by_server_id[record.server_id] = record

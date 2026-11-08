@@ -335,10 +335,14 @@ class LivePipeline:
             try:
                 await self._dashboard.start()
             except OSError as exc:
-                logger.warning(
-                    "Веб-дашборд недоступен ({}) — продолжаю без него", exc
-                )
-                self._dashboard = None
+                # Порт занят = почти наверняка уже работает другой экземпляр
+                # бота: молча работать «без дашборда» нельзя — иначе незаметно
+                # плодятся дубли (общие логи/БД, гонки позиций).
+                raise PipelineError(
+                    f"веб-дашборд не смог занять порт "
+                    f"{settings.dashboard_port} ({exc}) — похоже, бот уже "
+                    "запущен другим процессом"
+                ) from exc
 
 
     async def start_trading(self) -> None:

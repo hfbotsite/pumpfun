@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import signal
+import socket
 import sys
 import time
 from pathlib import Path
@@ -241,6 +242,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.status:
         return _show_status(_resolve_db_path(args))
+
+    if not args.no_dashboard:
+        probe = socket.socket()
+        probe.settimeout(1.0)
+        busy = probe.connect_ex(("127.0.0.1", settings.dashboard_port or 8787)) == 0
+        probe.close()
+        if busy:
+            print(
+                f"ОШИБКА: похоже, бот уже запущен — порт {settings.dashboard_port} "
+                "занят (дашборд отвечает). Остановите существующий экземпляр "
+                "(Ctrl+C в его окне или systemctl stop pumpbot), либо используйте "
+                "--no-dashboard.",
+                file=sys.stderr,
+            )
+            return 2
 
     logger.info(
         "Старт бота: mode={}, network={}, positions={}, db={}",

@@ -426,6 +426,7 @@ class PoolStreamListener:
                 continue
             tokens.append(token)
             pool.subscription_tokens.append(token)
+            await asyncio.sleep(0.05)  # без burst-шторма подписок
 
     def _make_account_callback(
         self, pool_address: str, account_address: str
