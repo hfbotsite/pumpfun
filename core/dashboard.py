@@ -99,7 +99,9 @@ border-radius:6px;color:var(--fg);font-size:13px}
 #loginerr{color:var(--red);font-size:12px;min-height:16px}
 #action_status{font-size:12px;color:var(--dim);margin-left:10px}
 #log.frozen{outline:1px solid var(--blue)}
-#mode{cursor:pointer}#mode:hover{filter:brightness(1.3)}
+#network{cursor:pointer}
+#network.live{border-color:var(--blue);color:var(--blue)}
+#network.dim,#mode.dim{opacity:.55}
 .btn.mini.run{color:var(--green);border-color:var(--green)}
 .btn.bt-run,.btn.bt-stop{padding:8px 18px;font-size:14px;font-weight:700}
 .btn.bt-run{color:var(--green);border-color:var(--green)}
@@ -231,8 +233,13 @@ function render(d){
   const mode=$('mode');
   mode.textContent=s.mode||'—';
   mode.className='badge '+(s.mode==='live'?'live':'dry');
-  mode.title='Нажмите — переключить в '+((currentMode==='live')?'DRY-RUN':'LIVE');
-  $('network').textContent=s.network||'—';
+  mode.title='Текущий режим исполнения';
+  const net=$('network');
+  net.textContent=s.network||'—';
+  net.className='badge'+((currentMode==='live')?' live':' dim');
+  net.title=(currentMode==='live')
+    ?'Активная торговля на mainnet — нажмите, чтобы вернуться в DRY-RUN'
+    :'Нажмите — переключить в LIVE (реальный SOL)';
   $('venue').textContent='venue: '+(s.venue||'—');
   $('uptime').textContent='uptime '+dur(s.uptime_s||0);
   $('poscount').textContent=`позиции ${s.positions_open??0}/${s.positions_limit??0}`;
@@ -338,23 +345,23 @@ $('loginbtn').onclick=async()=>{
   if(d.ok&&d.token){TOKEN=d.token;localStorage.setItem('dash_token',TOKEN);hideLogin();connect();refreshOnce()}
   else{$('loginerr').textContent=d.error||'неверный логин или пароль'}
 };
-$('mode').onclick=async()=>{
+$('network').onclick=async()=>{
   const target=(currentMode==='live')?'dry':'live';
   const msg=(target==='live')
-   ?'ПЕРЕВЕСТИ В LIVE? Ордера будут исполняться РЕАЛЬНЫМ SOL с вашего кошелька. Требуются настроенный кошелёк и отсутствие открытых позиций.'
-   :'Перевести бота в DRY-RUN (бумажная торговля)?';
+   ?'ПЕРЕХОД В LIVE: ордера будут исполняться РЕАЛЬНЫМ SOL с вашего кошелька; нужны настроенный кошелёк и закрытые открытые позиции. Перевести?'
+   :'ПЕРЕХОД В DRY-RUN: ордера перестанут исполняться реально — бумажная торговля. Перевести?';
   if(!confirm(msg))return;
-  const badge=$('mode');
-  badge.style.opacity='0.5';
+  const net=$('network');
+  net.style.opacity='0.5';
   try{
     const r=await api('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'bot_mode',mode:target})});
     if(r.status===401){showLogin();return}
     const d=await r.json();
-    if(!d.ok){$('conn').textContent='ошибка: '+(d.error||'?');badge.style.opacity='1';return}
-    refreshOnce();
+    if(!d.ok){$('conn').textContent='ошибка: '+(d.error||'?')}
   }catch(e){}
-  badge.style.opacity='1';
+  net.style.opacity='1';
+  refreshOnce();
 };
 $('botstart').onclick=async()=>{
   if(!confirm('Возобновить торговлю?'))return;
