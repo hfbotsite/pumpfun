@@ -101,7 +101,7 @@ border-radius:6px;color:var(--fg);font-size:13px}
 #log.frozen{outline:1px solid var(--blue)}
 #network{cursor:pointer}
 #network.live{border-color:var(--blue);color:var(--blue)}
-#network.dim,#mode.dim{opacity:.55}
+#network:hover{border-color:#fff;color:#fff}
 .btn.mini.run{color:var(--green);border-color:var(--green)}
 .btn.bt-run,.btn.bt-stop{padding:8px 18px;font-size:14px;font-weight:700}
 .btn.bt-run{color:var(--green);border-color:var(--green)}
@@ -236,7 +236,7 @@ function render(d){
   mode.title='Текущий режим исполнения';
   const net=$('network');
   net.textContent=s.network||'—';
-  net.className='badge'+((currentMode==='live')?' live':' dim');
+  net.className='badge'+((currentMode==='live')?' live':'');
   net.title=(currentMode==='live')
     ?'Активная торговля на mainnet — нажмите, чтобы вернуться в DRY-RUN'
     :'Нажмите — переключить в LIVE (реальный SOL)';
