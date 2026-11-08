@@ -198,7 +198,7 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
     </div>
   </section>
 
-<section class="card wide"><div class="poshead"><h2>Лог (хвост)</h2><span class="spacer"></span><span id="loghint" style="color:var(--dim);font-size:11px"></span><button class="btn mini" id="logcopy" title="Скопировать весь видимый лог">копировать</button></div><pre id="log">—</pre></section>
+<section class="card wide"><div class="poshead"><h2>Лог (хвост)</h2><span class="spacer"></span><button class="btn mini" id="logclear">Очистить лог</button></div><pre id="log">—</pre></section>
 
 </main>
 <script>
@@ -335,7 +335,6 @@ function selectionInLog(){
 function updateLog(lines){
   if(selectionInLog()){
     logEl.classList.add('frozen');
-    $('loghint').textContent='выделено — обновление приостановлено, скопируйте и снимите выделение';
     return;
   }
   logEl.classList.remove('frozen');
@@ -344,19 +343,12 @@ function updateLog(lines){
   logEl.textContent=lines.join(String.fromCharCode(10))||'—';
   logEl.scrollTop=atBottom?logEl.scrollHeight:top;
 }
-$('logcopy').onclick=async()=>{
-  const text=logEl.textContent==='—'?'':logEl.textContent;
-  if(!text)return;
+$('logclear').onclick=async()=>{
   try{
-    await navigator.clipboard.writeText(text);
-    $('loghint').textContent='скопировано в буфер';
-  }catch(e){
-    const range=document.createRange();range.selectNodeContents(logEl);
-    const s=window.getSelection();s.removeAllRanges();s.addRange(range);
-    const ok=document.execCommand&&document.execCommand('copy');
-    $('loghint').textContent=ok?'скопировано':'текст выделен — нажмите Ctrl+C';
-  }
-  setTimeout(()=>{$('loghint').textContent=''},2500);
+    const r=await api('/api/log/clear',{method:'POST'});
+    if(r.status===401){showLogin();return}
+    logEl.textContent='—';
+  }catch(e){}
 };
 $('sellall').onclick=async()=>{
   if(busy)return;
@@ -587,6 +579,7 @@ class DashboardServer:
         app.router.add_get("/api/stream", self._stream)
         app.router.add_post("/api/action", self._action)
         app.router.add_post("/api/backtest", self._backtest)
+        app.router.add_post("/api/log/clear", self._log_clear)
         app.router.add_get("/api/backtest/sample", self._backtest_sample)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -692,6 +685,23 @@ class DashboardServer:
         token = secrets.token_hex(32)
         self._tokens[token] = time.time() + SESSION_TTL_SECONDS
         return web.json_response({"ok": True, "token": token})
+
+    async def _log_clear(self, request: web.Request) -> web.Response:
+        """``POST /api/log/clear``: чистит кольцевой буфер хвоста лога.
+
+        Файловые логи бота не затрагиваются — очищается только панель
+        дашборда (буфер наполняется заново новыми сообщениями).
+
+        Args:
+            request: HTTP-запрос.
+
+        Returns:
+            JSON ``{ok: True}`` или 401.
+        """
+        if not self._authorized(request):
+            return self._unauthorized()
+        self._log_tail.clear()
+        return web.json_response({"ok": True})
 
     async def _page(self, request: web.Request) -> web.Response:
         """Отдаёт HTML-страницу дашборда.
