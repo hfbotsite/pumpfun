@@ -677,10 +677,15 @@ class LivePipeline:
         pool = self._listener.registry.get(pool_address)
         return pool is None or pool.lp_mint is None
 
-    def _pool_for_mint(
+    async def _pool_for_mint(
         self, mint: str
     ) -> tuple[PoolInfo | None, str | None, str | None]:
         """Возвращает (pool_info, creator, ошибка) для ручного действия.
+
+        Пул позиции мог отсутствовать в реестре (рестарт процесса, чистка
+        «молчащих» пулов) — тогда он восстанавливается с сети: кривая по
+        mint + резервы через RPC. При нулевых резервах у найденного пула
+        состояние обновляется тем же путём.
 
         Args:
             mint: Mint мемкоина.
@@ -688,53 +693,52 @@ class LivePipeline:
         Returns:
             Кортеж: снимок пула, кошелёк создателя, текст ошибки (если есть).
         """
-        assert self._trader is not None
-        position = self._trader.portfolio.get(mint)
+        trader = self._trader
+        if trader is None:
+            return None, None, "пайплайн не запущен"
+        position = trader.portfolio.get(mint)
         if position is None:
             return None, None, f"позиция {mint} не найдена"
-        if self._listener is None:
+        listener = self._listener
+        if listener is None:
             return None, None, "слушатель недоступен"
-        tracked = self._listener.registry.get(position.pool_address)
+        tracked = listener.registry.get(position.pool_address)
         if tracked is None:
+            try:
+                tracked = await listener.register_pool_from_mint(mint)
+            except RpcError as exc:
+                tracked = None
+                logger.debug(
+                    "Восстановление пула {} не удалось: {}", mint, exc
+                )
+            if tracked is None:
+                return (
+                    None,
+                    None,
+                    (
+                        f"пул {position.pool_address} недоступен: не найден в "
+                        "реестре и не восстановлен с сети — токен мог "
+                        "мигрировать на AMM"
+                    ),
+                )
+        if tracked.quote_reserve <= 0 or tracked.base_reserve <= 0:
+            try:
+                await listener.refresh_pool_reserves(tracked)
+            except RpcError as exc:
+                logger.debug(
+                    "Обновление резервов {} не удалось: {}", mint, exc
+                )
+        if tracked.quote_reserve <= 0 or tracked.base_reserve <= 0:
             return (
                 None,
                 None,
                 (
-                    f"пул {position.pool_address} удалён из реестра — дождитесь "
-                    "события или перезапустите с watchlist"
+                    "резервы пула неизвестны (RPC не вернул состояние аккаунта) — "
+                    "повторите попытку позже"
                 ),
             )
         return tracked.to_pool_info(), tracked.creator, None
 
-    async def _dashboard_bot_lifecycle(
-        self, action: str, payload: dict[str, Any]
-    ) -> dict[str, object] | None:
-        """Старт/Останов/Смена режима; ``None`` — не lifecycle-действие.
-
-        Args:
-            action: Имя действия.
-            payload: Параметры (для ``bot_mode`` — целевой режим).
-
-        Returns:
-            Словарь результата для lifecycle-действий или ``None``.
-        """
-        if action == "bot_mode":
-            target = str(payload.get("mode", "")).strip()
-            return await self._dashboard_set_mode(target)
-        if action == "bot_stop":
-            if not self._trading_active:
-                return {"ok": False, "error": "торговля уже остановлена"}
-            await self.stop_trading()
-            return {"ok": True, "state": "stopped"}
-        if action == "bot_start":
-            if self._trading_active:
-                return {"ok": False, "error": "бот уже работает"}
-            try:
-                await self.start_trading()
-            except PipelineError as exc:
-                return {"ok": False, "error": str(exc)}
-            return {"ok": True, "state": "running"}
-        return None
 
     async def _dashboard_set_mode(self, target: str) -> dict[str, object]:
         """Переключает режим исполнения (dry/live) с перезапуском торговли.
@@ -796,8 +800,119 @@ class LivePipeline:
             "trading": "running" if was_active else "stopped",
         }
 
+    async def _dashboard_bot_lifecycle(
+        self, action: str, payload: dict[str, Any]
+    ) -> dict[str, object] | None:
+        """Старт/Останов/Смена режима; ``None`` — действие не lifecycle-овое.
+
+        Args:
+            action: Имя действия.
+            payload: Параметры (для ``bot_mode`` — целевой режим).
+
+        Returns:
+            Словарь результата для lifecycle-действий или ``None``.
+        """
+        if action == "bot_stop":
+            if not self._trading_active:
+                return {"ok": False, "error": "торговля уже остановлена"}
+            await self.stop_trading()
+            return {"ok": True, "state": "stopped"}
+        if action == "bot_start":
+            if self._trading_active:
+                return {"ok": False, "error": "бот уже работает"}
+            try:
+                await self.start_trading()
+            except PipelineError as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True, "state": "running"}
+        if action == "bot_mode":
+            target = str(payload.get("mode", "")).strip()
+            return await self._dashboard_set_mode(target)
+        return None
+
     async def _dashboard_action(self, payload: dict[str, object]) -> dict[str, object]:
         """Обрабатывает ручные действия дашборда (кнопки сделок).
+
+        Любое исключение превращается в ``{ok: False, error}`` — страница
+        никогда не получает 500 без тела.
+        """
+        try:
+            return await self._dashboard_action_inner(payload)
+        except Exception as exc:
+            logger.exception("Ошибка ручного действия дашборда")
+            return {"ok": False, "error": f"внутренняя ошибка: {exc}"}
+
+    async def _sell_all_positions(
+        self, trader: MomentumTrader
+    ) -> dict[str, object]:
+        """Закрывает все открытые позиции (с fallback учётного закрытия).
+
+        Args:
+            trader: Движок с портфелем.
+
+        Returns:
+            Сводный результат по каждой позиции.
+        """
+        results: list[dict[str, object]] = []
+        for position in trader.portfolio.all_positions():
+            pool, creator, err = await self._pool_for_mint(position.base_mint)
+            if err is not None or pool is None:
+                if self._dry_run:
+                    # Бумажная позиция, пул недоступен — учётное закрытие.
+                    forced = trader.portfolio.force_close(
+                        position.base_mint,
+                        exit_price=position.entry_price,
+                        exit_reason="manual_no_pool",
+                    )
+                    results.append(
+                        {
+                            "mint": position.base_mint,
+                            "ok": True,
+                            "forced": True,
+                            "closed": forced is not None,
+                            "note": f"закрыто учётно ({err})",
+                        }
+                    )
+                else:
+                    results.append(
+                        {
+                            "mint": position.base_mint,
+                            "ok": False,
+                            "error": err or "пул недоступен",
+                        }
+                    )
+                continue
+            outcome = await trader.manual_sell(
+                position.base_mint, pool, creator=creator
+            )
+            if not outcome.get("ok") and self._dry_run:
+                # Бумажная позиция, продать нечем (пул недоступен) —
+                # закрываем учётно: реальных токенов нет, честно.
+                forced = trader.portfolio.force_close(
+                    position.base_mint,
+                    exit_price=position.entry_price,
+                    exit_reason="manual_no_pool",
+                )
+                outcome = {
+                    "ok": True,
+                    "forced": True,
+                    "closed": forced is not None,
+                    "note": "закрыто учётно (пул недоступен, dry-run)",
+                }
+            results.append({"mint": position.base_mint, **outcome})
+        ok_all = bool(results) and all(item["ok"] for item in results)
+        if any(item.get("closed") for item in results):
+            self._pnl_curve.append((time.time(), trader.portfolio.stats.pnl_sol))
+        return {
+            "ok": ok_all,
+            "results": results,
+            "error": None if ok_all else "не все позиции закрыты",
+        }
+
+    async def _dashboard_action_inner(
+        self, payload: dict[str, object]
+    ) -> dict[str, object]:
+        """Основная логика ручных действий (см. _dashboard_action).
 
         ``sell`` — закрыть позицию целиком; ``average`` — усредниться
         (докупить ``TRADE_AMOUNT_SOL``); ``sell_all`` — закрыть все позиции
@@ -825,44 +940,64 @@ class LivePipeline:
             return {"ok": False, "error": "пайплайн не запущен"}
 
         if action == "sell_all":
-            results: list[dict[str, object]] = []
-            for position in trader.portfolio.all_positions():
-                pool, creator, err = self._pool_for_mint(position.base_mint)
-                if err is not None or pool is None:
-                    results.append(
-                        {
-                            "mint": position.base_mint,
-                            "ok": False,
-                            "error": err or "пул недоступен",
-                        }
-                    )
-                    continue
-                outcome = await trader.manual_sell(
-                    position.base_mint, pool, creator=creator
-                )
-                results.append({"mint": position.base_mint, **outcome})
-            ok_all = bool(results) and all(item["ok"] for item in results)
-            if any(item.get("closed") for item in results):
-                self._pnl_curve.append((time.time(), trader.portfolio.stats.pnl_sol))
-            return {
-                "ok": ok_all,
-                "results": results,
-                "error": None if ok_all else "не все позиции закрыты",
-            }
+            return await self._sell_all_positions(trader)
 
         # Оставшиеся действия: sell / average (по одному mint).
         if not mint:
             return {"ok": False, "error": "не указан mint"}
-        pool, creator, err = self._pool_for_mint(mint)
+        pool, creator, err = await self._pool_for_mint(mint)
         if err is not None or pool is None:
-            return {"ok": False, "error": err or "пул недоступен"}
+            if not (action == "sell" and self._dry_run):
+                return {"ok": False, "error": err or "пул недоступен"}
+            # dry-run: бумажная позиция, пул недоступен — учётное закрытие
+            position = trader.portfolio.get(mint)
+            if position is not None:
+                trader.portfolio.force_close(
+                    mint,
+                    exit_price=position.entry_price,
+                    exit_reason="manual_no_pool",
+                )
+                return {"ok": True, "forced": True, "note": f"закрыто учётно ({err})"}
+            return {"ok": False, "error": err}
         if action == "sell":
             outcome = await trader.manual_sell(mint, pool, creator=creator)
+            outcome = self._force_close_if_stale(outcome, mint, trader)
         else:
             outcome = await trader.manual_buy(mint, pool, creator=creator)
         if outcome.get("ok") and action == "sell":
             self._pnl_curve.append((time.time(), trader.portfolio.stats.pnl_sol))
         return outcome
+
+    def _force_close_if_stale(
+        self,
+        outcome: dict[str, object],
+        mint: str,
+        trader: MomentumTrader,
+    ) -> dict[str, object]:
+        """Fallback dry-run: учётное закрытие бумажной позиции, если продать
+        нечем (пул недоступен/не восстановлен). В live — outcome без изменений.
+
+        Args:
+            outcome: Результат попытки продажи.
+            mint: Mint мемкоина.
+            trader: Движок с портфелем.
+
+        Returns:
+            Исходный outcome при успехе; иначе учётное закрытие.
+        """
+        if outcome.get("ok") or not self._dry_run:
+            return outcome
+        position = trader.portfolio.get(mint)
+        if position is None:
+            return outcome
+        trader.portfolio.force_close(
+            mint, exit_price=position.entry_price, exit_reason="manual_no_pool"
+        )
+        return {
+            "ok": True,
+            "forced": True,
+            "note": "закрыто учётно (пул недоступен, dry-run)",
+        }
 
     # ------------------------------------------------------------- Бэктест
     @staticmethod

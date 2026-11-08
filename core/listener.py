@@ -256,6 +256,18 @@ class PoolStreamListener:
             except RpcError as exc:
                 logger.debug("Отписка {} не удалась: {}", token, exc)
 
+    async def refresh_pool_reserves(self, pool: TrackedPool) -> None:
+        """Обновляет резервы пула из сетевого состояния (RPC).
+
+        Публичная обёртка над ``_refresh_pool_from_chain``: нужна ручным
+        операциям дашборда, когда пул есть в реестре, но его резервы
+        нулевые/устарели.
+
+        Args:
+            pool: Отслеживаемый пул.
+        """
+        await self._refresh_pool_from_chain(pool)
+
     async def stop(self) -> None:
         """Останавливает слушатель и снимает все подписки."""
         if self._retry_task is not None and not self._retry_task.done():

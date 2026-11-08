@@ -1122,7 +1122,12 @@ class SolanaWsClient:
         socket = self._ws
         if socket is None:
             raise RpcError("WS-соединение недоступно")
-        await socket.send(json.dumps(payload))
+        try:
+            await socket.send(json.dumps(payload))
+        except ConnectionClosed as exc:
+            # Конвертируем в RpcError: все вызывающие (подписки, запросы)
+            # уже умеют обрабатывать RpcError, а ConnectionClosed — нет.
+            raise RpcError(f"WS-соединение потеряно: {exc}") from exc
 
     def _fail_pending(self, error: Exception) -> None:
         """Помечает все ожидающие запросы ошибкой.
