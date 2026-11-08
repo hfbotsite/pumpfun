@@ -368,6 +368,14 @@ class PortfolioManager:
         )
         return position
 
+    def set_store(self, store: PortfolioStore | None) -> None:
+        """Подменяет хранилище (переключение режима dry/live).
+
+        Args:
+            store: Новое хранилище (``None`` — только память).
+        """
+        self._store = store
+
     def mark_price(self, base_mint: str, price: float) -> Position | None:
         """Обновляет зарегистрированный пик цены позиции.
 

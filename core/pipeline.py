@@ -295,6 +295,12 @@ class LivePipeline:
 
         if self._db_path:
             self._store = PortfolioStore(self._db_path)
+        else:
+            self._store = PortfolioStore(
+                settings.portfolio_dry_db_path
+                if self._dry_run
+                else settings.portfolio_db_path
+            )
 
         self._portfolio = PortfolioManager(
             max_concurrent_positions=self._max_concurrent_positions,
@@ -700,15 +706,21 @@ class LivePipeline:
             )
         return tracked.to_pool_info(), tracked.creator, None
 
-    async def _dashboard_bot_lifecycle(self, action: str) -> dict[str, object] | None:
-        """Старт/Останов торговли; ``None`` — действие не lifecycle-овое.
+    async def _dashboard_bot_lifecycle(
+        self, action: str, payload: dict[str, Any]
+    ) -> dict[str, object] | None:
+        """Старт/Останов/Смена режима; ``None`` — не lifecycle-действие.
 
         Args:
             action: Имя действия.
+            payload: Параметры (для ``bot_mode`` — целевой режим).
 
         Returns:
             Словарь результата для lifecycle-действий или ``None``.
         """
+        if action == "bot_mode":
+            target = str(payload.get("mode", "")).strip()
+            return await self._dashboard_set_mode(target)
         if action == "bot_stop":
             if not self._trading_active:
                 return {"ok": False, "error": "торговля уже остановлена"}
@@ -723,6 +735,66 @@ class LivePipeline:
                 return {"ok": False, "error": str(exc)}
             return {"ok": True, "state": "running"}
         return None
+
+    async def _dashboard_set_mode(self, target: str) -> dict[str, object]:
+        """Переключает режим исполнения (dry/live) с перезапуском торговли.
+
+        Безопасность: при открытых позициях — отказ (сначала «ПРОДАТЬ ВСЁ»,
+        иначе бумажные и живые позиции смешались бы в учёте); переход в LIVE
+        требует настроенного кошелька. Хранилище подменяется на БД целевого
+        режима, чтобы статистика режимов не смешивалась.
+
+        Args:
+            target: ``dry`` или ``live``.
+
+        Returns:
+            ``{ok, mode}`` или ``{ok: False, error}``.
+        """
+        if target not in ("dry", "live"):
+            return {"ok": False, "error": f"неизвестный режим: {target}"}
+        if self._portfolio is not None and self._portfolio.open_count > 0:
+            return {
+                "ok": False,
+                "error": (
+                    f"сначала закройте открытые позиции ({self._portfolio.open_count} шт.) "
+                    "кнопкой «ПРОДАТЬ ВСЁ»"
+                ),
+            }
+        if target == "live":
+            try:
+                load_keypair()
+            except Exception as exc:
+                return {"ok": False, "error": f"кошелёк не настроен: {exc}"}
+
+        was_active = self._trading_active
+        if was_active:
+            await self.stop_trading()
+
+        if self._store is not None:
+            with contextlib.suppress(Exception):
+                self._store.close()
+            self._store = None
+        self._store = PortfolioStore(
+            settings.portfolio_dry_db_path
+            if target == "dry"
+            else settings.portfolio_db_path
+        )
+        if self._portfolio is not None:
+            self._portfolio.set_store(self._store)
+            self._portfolio.load_open_positions()
+
+        self._dry_run = target == "dry"
+        if was_active:
+            await self.start_trading()
+        logger.warning(
+            "Режим исполнения переключён: {}",
+            "DRY-RUN" if self._dry_run else "LIVE",
+        )
+        return {
+            "ok": True,
+            "mode": "dry" if self._dry_run else "live",
+            "trading": "running" if was_active else "stopped",
+        }
 
     async def _dashboard_action(self, payload: dict[str, object]) -> dict[str, object]:
         """Обрабатывает ручные действия дашборда (кнопки сделок).
@@ -741,7 +813,7 @@ class LivePipeline:
         """
         action = str(payload.get("action", "")).strip()
         mint = str(payload.get("mint", "")).strip()
-        lifecycle = await self._dashboard_bot_lifecycle(action)
+        lifecycle = await self._dashboard_bot_lifecycle(action, payload)
         if lifecycle is not None:
             return lifecycle
 

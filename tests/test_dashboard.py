@@ -10,9 +10,10 @@ import pytest
 
 from core.dashboard import DashboardServer
 from core.pipeline import LivePipeline, PipelineStats
+from core.portfolio import PortfolioManager
 from core.screening import TokenScreeningService
-from models.trade_data import TokenSecurity
-from tests.conftest import make_pool
+from models.trade_data import DEXType, TokenSecurity
+from tests.conftest import BASE_MINT, POOL_ADDRESS, make_pool
 from tests.test_screening import FakeResolver, clean_security, wait_until
 from utils.logger import get_logger
 
@@ -323,3 +324,48 @@ class TestShutdown:
         assert pipeline._trading_active is False
         # Процесс не помечен как полностью остановленный — дашборд живёт.
         assert not pipeline._fully_stopped.is_set()
+
+
+class TestBotMode:
+    """Переключение режима исполнения из дашборда."""
+
+    def test_invalid_mode_rejected(self) -> None:
+        """Неизвестный режим — отказ."""
+        pipeline = LivePipeline(dry_run=True)
+        result = asyncio.run(
+            pipeline._dashboard_action({"action": "bot_mode", "mode": "hyper"})
+        )
+        assert result["ok"] is False
+        assert "неизвестный режим" in str(result["error"])
+
+    def test_mode_switch_blocked_by_positions(self) -> None:
+        """Открытые позиции блокируют смену режима (защита учёта)."""
+        pipeline = LivePipeline(dry_run=True)
+        pipeline._portfolio = PortfolioManager()
+        pipeline._portfolio.open_position(
+            base_mint=BASE_MINT,
+            pool_address=POOL_ADDRESS,
+            dex=DEXType.PUMP_FUN,
+            entry_price=1.0,
+            entry_sol=0.5,
+            token_amount=1_000_000,
+            opened_at=1000.0,
+        )
+        pipeline._trading_active = True
+        result = asyncio.run(
+            pipeline._dashboard_action({"action": "bot_mode", "mode": "live"})
+        )
+        assert result["ok"] is False
+        assert "закройте открытые позиции" in str(result["error"])
+
+    def test_mode_dry_switch_ok_when_flat(self) -> None:
+        """Без позиций и без активной торговли — режим меняется."""
+        pipeline = LivePipeline(dry_run=True)
+        pipeline._portfolio = PortfolioManager()
+        result = asyncio.run(
+            pipeline._dashboard_action({"action": "bot_mode", "mode": "live"})
+        )
+        # LIVE требует кошелёк: в тестовой среде .env может быть пуст — но
+        # ветка позиций уже пройдена, значит вернулась либо ok, либо ошибка
+        # кошелька; главное — НЕ блокировка позициями.
+        assert "закройте" not in str(result.get("error", ""))

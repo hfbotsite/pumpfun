@@ -139,7 +139,7 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
   <span class="badge" id="uptime">…</span>
   <span class="badge" id="poscount">…</span>
   <span id="conn">подключение…</span>
-  <span style="margin-left:auto"><button class="btn mini run" id="botstart" disabled title="Возобновить торговлю после остановки">Старт бота</button> <button class="btn mini danger" id="botstoptrading" title="Остановить торговлю (дашборд продолжает работать; открытые позиции — без управления)">Остановить торговлю</button> <button class="btn mini danger" id="botkill" title="Полностью остановить процесс бота (дашборд тоже выключится)">ОСТАНОВИТЬ БОТА</button> <button class="btn mini" id="logout">выйти</button></span>
+  <span style="margin-left:auto"><button class="btn mini run" id="botmode" title="Переключить режим исполнения (dry-run ↔ LIVE)">→ LIVE</button> <button class="btn mini run" id="botstart" disabled title="Возобновить торговлю после остановки">Старт бота</button> <button class="btn mini danger" id="botstoptrading" title="Остановить торговлю (дашборд продолжает работать; открытые позиции — без управления)">Остановить торговлю</button> <button class="btn mini danger" id="botkill" title="Полностью остановить процесс бота (дашборд тоже выключится)">ОСТАНОВИТЬ БОТА</button> <button class="btn mini" id="logout">выйти</button></span>
 </header>
 <main class="grid">
   <section class="card"><h2>Сессия</h2><div id="session"></div></section>
@@ -226,6 +226,8 @@ function render(d){
   const trading=(s.trading==='running');
   if($('botstart'))$('botstart').disabled=trading;
   if($('botstoptrading'))$('botstoptrading').disabled=!trading;
+  botTargetMode=(s.mode==='live')?'dry':'live';
+  if($('botmode')&&!$('botmode').disabled)$('botmode').textContent='→ '+(botTargetMode==='live'?'LIVE':'DRY-RUN');
   const mode=$('mode');
   mode.textContent=s.mode||'—';
   mode.className='badge '+(s.mode==='live'?'live':'dry');
@@ -334,6 +336,23 @@ $('loginbtn').onclick=async()=>{
   const d=await r.json().catch(()=>({}));
   if(d.ok&&d.token){TOKEN=d.token;localStorage.setItem('dash_token',TOKEN);hideLogin();connect();refreshOnce()}
   else{$('loginerr').textContent=d.error||'неверный логин или пароль'}
+};
+let botTargetMode='dry';
+$('botmode').onclick=async()=>{
+  const target=(botTargetMode==='dry')?'live':'dry';
+  const msg=(target==='live')
+    ?'ПЕРЕВЕСТИ В LIVE? Ордера будут исполняться РЕАЛЬНЫМ SOL с вашего кошелька. Открытые позиции должны быть закрыты.'
+    :'Перевести бота в DRY-RUN (бумажная торговля)?';
+  if(!confirm(msg))return;
+  $('botmode').disabled=true;
+  try{
+    const r=await api('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'bot_mode',mode:target})});
+    if(r.status===401){showLogin();return}
+    const d=await r.json();
+    if(!d.ok){$('conn').textContent='ошибка переключения: '+(d.error||'?');$('botmode').disabled=false;return}
+  }catch(e){}
+  refreshOnce();$('botmode').disabled=false;
 };
 $('botstart').onclick=async()=>{
   if(!confirm('Возобновить торговлю?'))return;
