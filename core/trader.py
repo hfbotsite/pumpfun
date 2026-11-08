@@ -439,11 +439,19 @@ class MomentumTrader:
                 order=result,
             )
 
+        # Цена выхода из фактического результата (SOL/токен, человеческие
+        # единицы) — execution_price() ориентирована на BUY и для продажи
+        # даёт мусорные единицы (лямпорты за raw-токен).
+        exit_price = (
+            result.sol_amount / result.token_amount
+            if result.token_amount > 0
+            else execution_price(quote_used, pool.base_decimals)
+        )
         closed = self._portfolio.apply_sell(
             base_mint=position.base_mint,
             sold_tokens=result.token_amount,
             received_sol=result.sol_amount,
-            exit_price=execution_price(quote_used, pool.base_decimals),
+            exit_price=exit_price,
             sold_at=event.timestamp,
             exit_reason=(signal.exit_reason or ExitReason.MANUAL).value,
         )
@@ -620,11 +628,16 @@ class MomentumTrader:
                     "ok": False,
                     "error": result.error or "ордер продажи отклонён",
                 }
+            exit_price = (
+                result.sol_amount / result.token_amount
+                if result.token_amount > 0
+                else execution_price(quote_used, pool.base_decimals)
+            )
             closed = self._portfolio.apply_sell(
                 base_mint=base_mint,
                 sold_tokens=result.token_amount,
                 received_sol=result.sol_amount,
-                exit_price=execution_price(quote_used, pool.base_decimals),
+                exit_price=exit_price,
                 exit_reason="manual",
             )
             logger.info(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from core.persistence import PortfolioStore
 from core.portfolio import PortfolioError, PortfolioManager
 from core.trader import MomentumTrader
@@ -187,6 +189,8 @@ class TestManualSell:
         assert trader.portfolio.open_count == 0
         trade = trader.portfolio.closed_trades[-1]
         assert trade.exit_reason == "manual"
+        # Цена выхода в правильных единицах: 0.4 SOL / 1e6 токенов = 4e-7.
+        assert trade.exit_price == pytest.approx(4e-7, rel=1e-9)
 
     async def test_failure_keeps_position(self) -> None:
         """Неуспешная продажа оставляет позицию открытой."""
