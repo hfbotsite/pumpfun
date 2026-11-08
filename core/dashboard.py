@@ -99,6 +99,7 @@ border-radius:6px;color:var(--fg);font-size:13px}
 #loginerr{color:var(--red);font-size:12px;min-height:16px}
 #action_status{font-size:12px;color:var(--dim);margin-left:10px}
 #log.frozen{outline:1px solid var(--blue)}
+.badge.plain{border:none;padding:2px 0;border-radius:0}
 #network{cursor:pointer}
 #network.live{border-color:var(--blue);color:var(--blue)}
 #network:hover{border-color:#fff;color:#fff}
@@ -138,9 +139,9 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
   <h1>PUMP SCALPER</h1>
   <span class="badge" id="mode">…</span>
   <span class="badge" id="network">…</span>
-  <span class="badge" id="venue">…</span>
-  <span class="badge" id="uptime">…</span>
-  <span class="badge" id="poscount">…</span>
+  <span class="badge plain" id="venue">…</span>
+  <span class="badge plain" id="uptime">…</span>
+  <span class="badge plain" id="poscount">…</span>
   <span id="conn">подключение…</span>
   <span style="margin-left:auto"><button class="btn mini run" id="botstart" disabled title="Возобновить торговлю после остановки">Старт бота</button> <button class="btn mini danger" id="botstoptrading" title="Остановить торговлю (дашборд продолжает работать; открытые позиции — без управления)">Остановить торговлю</button> <button class="btn mini danger" id="botkill" title="Полностью остановить процесс бота (дашборд тоже выключится)">ОСТАНОВИТЬ БОТА</button> <button class="btn mini" id="logout">выйти</button></span>
 </header>
@@ -243,7 +244,7 @@ function render(d){
   $('venue').textContent='venue: '+(s.venue||'—');
   $('uptime').textContent='uptime '+dur(s.uptime_s||0);
   $('poscount').textContent=`позиции ${s.positions_open??0}/${s.positions_limit??0}`;
-  $('poscount').className='badge '+((s.positions_open||0)>0?'ok':'');
+  $('poscount').className='badge plain'+((s.positions_open||0)>0?' ok':'');
 
   const st=d.stats||{};
   const wr=st.win_rate_pct??0;
