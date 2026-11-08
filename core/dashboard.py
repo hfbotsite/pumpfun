@@ -794,7 +794,11 @@ class DashboardServer:
         Returns:
             Ответ с HTML.
         """
-        return web.Response(text=_PAGE, content_type="text/html")
+        return web.Response(
+            text=_PAGE,
+            content_type="text/html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     async def _snapshot(self, request: web.Request) -> web.Response:
         """Отдаёт разовый JSON-снимок состояния (требует токен).
