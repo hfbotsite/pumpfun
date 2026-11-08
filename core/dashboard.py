@@ -96,6 +96,9 @@ border-radius:6px;color:var(--fg);font-size:13px}
 #loginerr{color:var(--red);font-size:12px;min-height:16px}
 #action_status{font-size:12px;color:var(--dim);margin-left:10px}
 #log.frozen{outline:1px solid var(--blue)}
+.btn.bt-run,.btn.bt-stop{padding:8px 18px;font-size:14px;font-weight:700}
+.btn.bt-run{color:var(--green);border-color:var(--green)}
+.btn.bt-stop{color:var(--red);border-color:var(--red)}
 #backtest{display:none}
 .btrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0}
 .btrow label{color:var(--dim);font-size:12px}
@@ -191,8 +194,8 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
         <span class="spacer"></span>
         <span id="bt_status" style="color:var(--dim);font-size:12px"></span>
         <button class="btn mini" id="bt_sample" title="Заполнить форму демонстрационным CSV">демо-CSV</button>
-        <button class="btn danger" id="bt_run">ЗАПУСТИТЬ</button>
-        <button class="btn mini danger" id="bt_stop" disabled title="Остановить прогон и показать статистику по пройденной части">ОСТАНОВИТЬ</button>
+        <button class="btn bt-run" id="bt_run">ЗАПУСТИТЬ</button>
+        <button class="btn bt-stop" id="bt_stop" disabled title="Остановить прогон и показать статистику по пройденной части">ОСТАНОВИТЬ</button>
       </div>
       <div id="bt_results"></div>
     </div>
