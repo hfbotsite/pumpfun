@@ -97,8 +97,8 @@ class TestBacktestHandler:
                 {
                     "mode": "csv",
                     "csv": csv_text,
-                    "initial_sol": 90,
-                    "initial_token": 600_000_000,
+                    "initial_sol": 120,  # реальные 90 ≥ MIN_REAL_POOL_SOL=80
+                    "initial_token": 800_000_000,
                     "trade_amount_sol": 0.5,
                 }
             )
@@ -208,8 +208,9 @@ class TestBacktestCancellation:
                 pool_address=POOL_ADDRESS,
                 base_mint=BASE_MINT,
                 dex=DEXType.PUMP_FUN,
-                quote_reserve=90_000_000_000,
-                base_reserve=600_000_000_000_000,
+                # реальные 90 SOL ≥ MIN_REAL_POOL_SOL=80
+                quote_reserve=120_000_000_000,
+                base_reserve=800_000_000_000_000,
             ),
             events=tuple(build_pump_events()),
             security=TokenSecurity(lp_burned_pct=100.0),
@@ -252,8 +253,9 @@ class TestBacktestCancellation:
                 pool_address=POOL_ADDRESS,
                 base_mint=BASE_MINT,
                 dex=DEXType.PUMP_FUN,
-                quote_reserve=90_000_000_000,
-                base_reserve=600_000_000_000_000,
+                # реальные 90 SOL ≥ MIN_REAL_POOL_SOL=80
+                quote_reserve=120_000_000_000,
+                base_reserve=800_000_000_000_000,
             ),
             events=tuple(all_events),
             security=TokenSecurity(lp_burned_pct=100.0),

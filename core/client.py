@@ -1084,7 +1084,9 @@ class SolanaWsClient:
 
     async def _resubscribe_all(self) -> None:
         """Восстанавливает все ранее активные подписки после реконнекта."""
-        for record in self._records.values():
+        # Снимок: discovery новых пулов добавляет записи в _records прямо во
+        # время цикла (внутри await), мутация dict во время итерации падает.
+        for record in list(self._records.values()):
             # После реконнекта сервер не помнит НИ ОДНОЙ подписки —
             # переподписываем все записи (в т.ч. неудавшиеся ранее).
             record.server_id = None

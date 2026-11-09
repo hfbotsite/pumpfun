@@ -10,9 +10,9 @@ from typing import Any
 
 from models.trade_data import DEXType, PoolInfo, Position, TradeEvent, TradeSide
 
-#: «Хороший» пул: 90 SOL виртуальных резервов (реальные 60 SOL — выше
-#: порога MIN_REAL_POOL_SOL=50), 800 млн токенов.
-GOOD_POOL_SOL_LAMPORTS: int = 90_000_000_000
+#: «Хороший» пул: 120 SOL виртуальных резервов (реальные 90 SOL — выше
+#: порога MIN_REAL_POOL_SOL=80), 800 млн токенов.
+GOOD_POOL_SOL_LAMPORTS: int = 120_000_000_000
 GOOD_POOL_TOKENS: int = 800_000_000_000_000
 
 POOL_ADDRESS: str = "Pool1111111111111111111111111111111111111111"

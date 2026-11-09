@@ -108,8 +108,10 @@ class TestBacktestRun:
         write_events_csv(path, build_pump_events())
         scenario = scenario_from_csv(
             path,
-            initial_sol_reserve=90.0,
-            initial_token_reserve=600_000_000.0,
+            # 120 SOL виртуальных = 90 реальных ≥ MIN_REAL_POOL_SOL=80; цена
+            # та же, что при 90/600M (0.15 SOL на 1M токенов).
+            initial_sol_reserve=120.0,
+            initial_token_reserve=800_000_000.0,
             security=TokenSecurity(mint_authority=None, freeze_authority=None, lp_burned_pct=100.0),
         )
         backtester = Backtester(
@@ -139,8 +141,10 @@ class TestBacktestRun:
         write_events_csv(path, events)
         scenario = scenario_from_csv(
             path,
-            initial_sol_reserve=90.0,
-            initial_token_reserve=600_000_000.0,
+            # 120 SOL виртуальных = 90 реальных ≥ MIN_REAL_POOL_SOL=80; цена
+            # та же, что при 90/600M (0.15 SOL на 1M токенов).
+            initial_sol_reserve=120.0,
+            initial_token_reserve=800_000_000.0,
             security=TokenSecurity(mint_authority=None, freeze_authority=None, lp_burned_pct=100.0),
         )
         backtester = Backtester(trade_amount_sol=0.5)
@@ -155,8 +159,10 @@ class TestBacktestRun:
         write_events_csv(path, build_pump_events())
         scenario = scenario_from_csv(
             path,
-            initial_sol_reserve=90.0,
-            initial_token_reserve=600_000_000.0,
+            # 120 SOL виртуальных = 90 реальных ≥ MIN_REAL_POOL_SOL=80; цена
+            # та же, что при 90/600M (0.15 SOL на 1M токенов).
+            initial_sol_reserve=120.0,
+            initial_token_reserve=800_000_000.0,
             security=TokenSecurity(mint_authority=None, freeze_authority=None, lp_burned_pct=100.0),
         )
         report = await Backtester(trade_amount_sol=0.5).run(scenario)
