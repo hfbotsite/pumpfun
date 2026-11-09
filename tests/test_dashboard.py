@@ -385,7 +385,7 @@ class TestHoldReasonFunnel:
         top = pipeline._top_hold_reasons(5)
         assert top == {
             "ликвидность (MIN_REAL_POOL_SOL)": 2,
-            "окно надёжности (< 60 c)": 1,
+            "окно надёжности": 1,
             "низкая Volume Velocity": 1,
             "другое": 1,
         }

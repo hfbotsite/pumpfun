@@ -85,7 +85,7 @@ class Settings(BaseSettings):
         default=30.0, ge=0, description="Минимальная ликвидность AMM-пула, SOL."
     )
     min_real_pool_sol: float = Field(
-        default=80.0, ge=0,
+        default=60.0, ge=0,
         description=(
             "Минимальные РЕАЛЬНЫЕ резервы bonding curve, SOL "
             "(виртуальный резерв = реальные + 30 SOL, порог по виртуальным фиктивен)."
@@ -95,7 +95,7 @@ class Settings(BaseSettings):
         default=5.0, gt=0, lt=100, description="Предельный Price Impact ордера, %."
     )
     token_reliable_seconds: float = Field(
-        default=60.0, gt=0,
+        default=30.0, gt=0,
         description=(
             "Возраст токена с момента обнаружения, после которого он считается "
             "надёжным: входы/усреднения разрешены только по токенам старше "
