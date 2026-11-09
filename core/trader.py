@@ -211,6 +211,10 @@ class MomentumTrader:
         self._blocked_until: dict[str, float] = {}
         self._position_locks: dict[str, asyncio.Lock] = {}
 
+    #: Окно, в котором клик по только что закрытой позиции считает
+    #: «уже закрыто», а не ошибкой (снимок дашборда отстаёт на интервал SSE).
+    _RECENT_CLOSE_WINDOW: float = 30.0
+
     # --------------------------------------------------------------- Свойства
     @property
     def portfolio(self) -> PortfolioManager:
@@ -748,6 +752,19 @@ class MomentumTrader:
         async with self._position_lock(base_mint):
             position = self._portfolio.get(base_mint)
             if position is None:
+                recent = self._portfolio.last_closed(base_mint)
+                if (
+                    recent is not None
+                    and time.time() - recent.closed_at < self._RECENT_CLOSE_WINDOW
+                ):
+                    return {
+                        "ok": True,
+                        "already_closed": True,
+                        "note": (
+                            f"позиция уже закрыта стратегией "
+                            f"({recent.exit_reason}, {recent.pnl_sol:+.4f} SOL)"
+                        ),
+                    }
                 return {"ok": False, "error": f"позиция {base_mint} не найдена"}
             if position.pool_address != pool.pool_address:
                 return {"ok": False, "error": "несоответствие пула позиции"}
@@ -810,6 +827,18 @@ class MomentumTrader:
         async with self._position_lock(base_mint):
             position = self._portfolio.get(base_mint)
             if position is None:
+                recent = self._portfolio.last_closed(base_mint)
+                if (
+                    recent is not None
+                    and time.time() - recent.closed_at < self._RECENT_CLOSE_WINDOW
+                ):
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"позиция уже закрыта стратегией "
+                            f"({recent.exit_reason}, {recent.pnl_sol:+.4f} SOL)"
+                        ),
+                    }
                 return {"ok": False, "error": "усреднять можно только открытую позицию"}
             if position.pool_address != pool.pool_address:
                 return {"ok": False, "error": "несоответствие пула позиции"}

@@ -177,6 +177,20 @@ class PortfolioManager:
         """Кортеж закрытых сделок в порядке закрытия."""
         return tuple(self._closed)
 
+    def last_closed(self, base_mint: str) -> ClosedTrade | None:
+        """Возвращает последнюю закрытую сделку по mint (если была).
+
+        Args:
+            base_mint: Mint мемкоина.
+
+        Returns:
+            :class:`ClosedTrade` или ``None``.
+        """
+        for trade in reversed(self._closed):
+            if trade.base_mint == base_mint:
+                return trade
+        return None
+
     def load_open_positions(self) -> int:
         """Восстанавливает открытые позиции из хранилища (после рестарта).
 

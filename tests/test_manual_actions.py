@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from core.persistence import PortfolioStore
@@ -202,10 +204,12 @@ class TestManualSell:
         assert trader.portfolio.open_count == 1
 
     async def test_missing_position(self) -> None:
-        """Продажа без позиции — ошибка, исполнитель не дёргается."""
+        """Продажа без позиции (давно закрытой) — ошибка, исполнитель не дёргается."""
         executor = ManualExecutor()
         trader = make_manual_trader(executor)
-        trader.portfolio.force_close(BASE_MINT, exit_price=1.0)
+        trader.portfolio.force_close(
+            BASE_MINT, exit_price=1.0, closed_at=time.time() - 3600.0
+        )
         result = await trader.manual_sell(BASE_MINT, make_pool())
         assert result["ok"] is False
         assert "не найдена" in str(result["error"])
@@ -265,10 +269,54 @@ class TestManualBuy:
         assert position.entry_price == 1.0
 
     async def test_average_requires_position(self) -> None:
-        """Усреднение без позиции запрещено."""
+        """Усреднение без позиции (давно закрытой) запрещено."""
         executor = ManualExecutor()
         trader = make_manual_trader(executor)
-        trader.portfolio.force_close(BASE_MINT, exit_price=1.0)
+        trader.portfolio.force_close(
+            BASE_MINT, exit_price=1.0, closed_at=time.time() - 3600.0
+        )
         result = await trader.manual_buy(BASE_MINT, make_pool())
         assert result["ok"] is False
         assert "открытую позицию" in str(result["error"])
+
+
+class TestAlreadyClosed:
+    """Клик по позиции, которую только что закрыла стратегия."""
+
+    async def test_sell_recently_closed_returns_note(self) -> None:
+        """manual_sell после авто-закрытия — ok=True, «уже закрыта»."""
+        executor = ManualExecutor()
+        trader = make_manual_trader(executor)
+        closed = trader.portfolio.force_close(
+            BASE_MINT, exit_price=1.0, exit_reason="volume_exhaustion"
+        )
+        assert closed is not None
+        result = await trader.manual_sell(BASE_MINT, make_pool())
+        assert result["ok"] is True
+        assert result["already_closed"] is True
+        assert "уже закрыта" in str(result["note"])
+        assert "volume_exhaustion" in str(result["note"])
+        assert not executor.sell_calls
+
+    async def test_sell_old_closed_is_error(self) -> None:
+        """Закрытие давно (вне окна) — обычная ошибка «не найдена»."""
+        executor = ManualExecutor()
+        trader = make_manual_trader(executor)
+        trader.portfolio.force_close(
+            BASE_MINT, exit_price=1.0, closed_at=time.time() - 3600.0
+        )
+        result = await trader.manual_sell(BASE_MINT, make_pool())
+        assert result["ok"] is False
+        assert "не найдена" in str(result["error"])
+
+    async def test_buy_recently_closed_reports_reason(self) -> None:
+        """manual_buy после авто-закрытия — понятная ошибка, не «нет позиции»."""
+        executor = ManualExecutor()
+        trader = make_manual_trader(executor)
+        trader.portfolio.force_close(
+            BASE_MINT, exit_price=1.0, exit_reason="take_profit_1"
+        )
+        result = await trader.manual_buy(BASE_MINT, make_pool())
+        assert result["ok"] is False
+        assert "уже закрыта" in str(result["error"])
+        assert not executor.buy_orders
