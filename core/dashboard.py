@@ -298,7 +298,7 @@ function render(d){
    <div class="row"><span class="k">отклонено</span><span class="neg">${sc.rejected??0}</span></div>
    ${hrHtml}`;
 
-  const lat=d.latency||{};
+  const lat=(d.stream&&d.stream.latency)||{};
   $('latency').innerHTML=Object.keys(lat).length
     ?`<table><tr><th>этап</th><th>p50</th><th>p95</th><th>n</th></tr>${Object.entries(lat).map(([k,v])=>
       `<tr><td>${esc(k)}</td><td>${fmt(v.p50_ms||0,1)}</td><td>${fmt(v.p95_ms||0,1)}</td><td>${v.count??0}</td></tr>`).join('')}</table>`
