@@ -202,6 +202,7 @@ class LivePipeline:
         self._started: bool = False
         self._trading_active: bool = False
         self._consume_task: asyncio.Task[None] | None = None
+        self._sweep_task: asyncio.Task[None] | None = None
         self._fully_stopped = asyncio.Event()
         self._portfolio: PortfolioManager | None = None
         self._rate_ts: float = 0.0
@@ -403,6 +404,7 @@ class LivePipeline:
             )
 
         self._consume_task = asyncio.create_task(self._consume_loop())
+        self._sweep_task = asyncio.create_task(self._sweep_loop())
         self._trading_active = True
         self._running = True
         self.stats = PipelineStats(started_at=time.time())
@@ -459,6 +461,11 @@ class LivePipeline:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._consume_task
         self._consume_task = None
+        if self._sweep_task is not None and not self._sweep_task.done():
+            self._sweep_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._sweep_task
+        self._sweep_task = None
 
         if self._screening is not None:
             with contextlib.suppress(Exception):
@@ -988,6 +995,76 @@ class LivePipeline:
             "forced": True,
             "note": "закрыто учётно (пул недоступен, dry-run)",
         }
+
+    # ------------------------------------------------- Свип устаревших позиций
+    async def _sweep_loop(self) -> None:
+        """Раз в 5 c закрывает позиции, удерживаемые дольше MAX_HOLD_SECONDS.
+
+        Событийный выход по таймауту (стратегия) не срабатывает по мёртвым
+        токенам — событий по ним больше нет, и поза зависает навсегда,
+        занимая слоты входов. Свип гарантирует закрытие: попытка продажи,
+        при неудаче — учётное закрытие полным убытком.
+        """
+        while True:
+            await asyncio.sleep(5.0)
+            trader = self._trader
+            if trader is None or not self._trading_active:
+                continue
+            try:
+                await self._sweep_stale_positions(trader)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Ошибка свипа устаревших позиций")
+
+    async def _sweep_stale_positions(self, trader: MomentumTrader) -> None:
+        """Закрывает позиции старше ``max_hold_seconds``.
+
+        Сначала обычная продажа через лестницу; если продать нечем
+        (пул мёртв/недоступен) — учётное закрытие по нулевой цене, т.е.
+        полный убыток в размере вложенного SOL (write-through: строка
+        открытой позиции удаляется из БД, пишется запись в closed_trades).
+
+        Args:
+            trader: Движок с портфелем открытых позиций.
+        """
+        now = time.time()
+        for position in trader.portfolio.all_positions():
+            if now - position.opened_at <= settings.max_hold_seconds:
+                continue
+            mint = position.base_mint
+            age = now - position.opened_at
+            pool, creator, err = await self._pool_for_mint(mint)
+            if pool is not None:
+                outcome = await trader.manual_sell(
+                    mint, pool, creator=creator, exit_reason="max_hold"
+                )
+                if outcome.get("ok"):
+                    self._pnl_curve.append(
+                        (time.time(), trader.portfolio.stats.pnl_sol)
+                    )
+                    logger.info(
+                        "Свип: позиция {} закрыта по MAX_HOLD ({:.0f} c)", mint, age
+                    )
+                    continue
+                error = str(outcome.get("error", ""))
+            else:
+                error = err or "пул недоступен"
+            logger.warning(
+                "Свип: поза {} держится {:.0f} c > MAX_HOLD, продажа не удалась "
+                "({}) — закрытие убытком",
+                mint, age, error,
+            )
+            if not self._dry_run:
+                logger.critical(
+                    "LIVE: токены {} могли остаться в кошельке — позиция "
+                    "закрыта учётно (убыток учтён в статистике)",
+                    mint,
+                )
+            trader.portfolio.force_close(
+                mint, exit_price=0.0, exit_reason="max_hold_unsellable"
+            )
+            self._pnl_curve.append((time.time(), trader.portfolio.stats.pnl_sol))
 
     # ------------------------------------------------------------- Бэктест
     @staticmethod

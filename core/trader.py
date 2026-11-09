@@ -137,6 +137,8 @@ class MomentumTrader:
         exit_window_seconds: float | None = None,
         retry_cooldown_seconds: float | None = None,
         capital_sol: float | None = None,
+        token_reliable_seconds: float | None = None,
+        max_entries_per_mint: int | None = None,
     ) -> None:
         """Инициализирует движок решений.
 
@@ -154,6 +156,11 @@ class MomentumTrader:
                 пулу после неуспешного ордера, c (``None`` — из настроек).
             capital_sol: Ограничение свободного капитала, SOL (``None`` — без
                 ограничения).
+            token_reliable_seconds: Возраст токена (от обнаружения пула),
+                после которого разрешены входы/усреднения, c (``None`` — из
+                настроек).
+            max_entries_per_mint: Максимум входов по одному mint
+                (вход + усреднения; ``None`` — из настроек).
         """
         self._executor = executor
         self._portfolio = portfolio if portfolio is not None else PortfolioManager()
@@ -191,6 +198,16 @@ class MomentumTrader:
             else retry_cooldown_seconds,
         )
         self._capital_sol = capital_sol
+        self._token_reliable_seconds = (
+            settings.token_reliable_seconds
+            if token_reliable_seconds is None
+            else token_reliable_seconds
+        )
+        self._max_entries_per_mint = (
+            settings.max_entries_per_mint
+            if max_entries_per_mint is None
+            else max_entries_per_mint
+        )
         self._blocked_until: dict[str, float] = {}
         self._position_locks: dict[str, asyncio.Lock] = {}
 
@@ -251,14 +268,36 @@ class MomentumTrader:
         self._indicators.record(event)
 
         position = self._portfolio.get(event.base_mint)
-        if position is not None:
-            if position.pool_address != event.pool_address:
-                return TradeDecision(
-                    action=SignalAction.HOLD,
-                    reason="событие относится к другому пулу",
-                )
-            return await self._handle_exit(position, pool, event, creator)
-        return await self._handle_entry(pool, event, creator)
+        if position is None:
+            return await self._handle_entry(pool, event, creator)
+        if position.pool_address != event.pool_address:
+            return TradeDecision(
+                action=SignalAction.HOLD,
+                reason="событие относится к другому пулу",
+            )
+        decision = await self._handle_exit(position, pool, event, creator)
+        if decision.action != SignalAction.HOLD:
+            return decision
+        if position.entries_count >= self._max_entries_per_mint:
+            return decision
+        # Поза открыта, выхода нет, лимит входов не исчерпан: сильный
+        # моментум-сигнал = усреднение (вход + доборы по одному mint).
+        averaged = await self._handle_average(position, pool, event, creator)
+        return averaged if averaged is not None else decision
+
+    def _token_reliable(self, pool: PoolInfo, now: float) -> bool:
+        """Проверяет, что токен «надёжен»: живёт дольше окна надёжности.
+
+        Args:
+            pool: Снимок пула (``created_at`` — момент обнаружения; 0 = неизвестен).
+            now: Текущий unix ts события.
+
+        Returns:
+            ``True`` — входы/усреднения разрешены.
+        """
+        if pool.created_at <= 0.0:
+            return True
+        return now - pool.created_at >= self._token_reliable_seconds
 
     def forget_pool(self, pool_address: str) -> None:
         """Сбрасывает индикаторы и блокировки по пулу.
@@ -321,6 +360,15 @@ class MomentumTrader:
                 reason="пауза после неуспешного ордера",
             )
 
+        if not self._token_reliable(pool, event.timestamp):
+            return TradeDecision(
+                action=SignalAction.HOLD,
+                reason=(
+                    "токен младше окна надёжности "
+                    f"({self._token_reliable_seconds:.0f} c от обнаружения)"
+                ),
+            )
+
         metrics = self._indicators.window_metrics(
             pool.pool_address, self._entry_window_seconds, now=event.timestamp
         )
@@ -378,6 +426,86 @@ class MomentumTrader:
         return TradeDecision(
             action=SignalAction.ENTER,
             reason=signal.reason,
+            signal=signal,
+            order=result,
+        )
+
+    async def _handle_average(
+        self,
+        position: Position,
+        pool: PoolInfo,
+        event: TradeEvent,
+        creator: str | None,
+    ) -> TradeDecision | None:
+        """Усредняет открытую позицию по сильному моментум-сигналу.
+
+        Вызывается, когда выходные триггеры не сработали, лимит входов по
+        mint не исчерпан, и стратегия снова даёт ``ENTER``. Все гейты входа
+        (капитал, пауза после отказа, окно надёжности, фильтры) применяются
+        полностью.
+
+        Args:
+            position: Открытая позиция по этому mint.
+            pool: Снимок пула после события.
+            event: Событие сделки.
+            creator: Кошелёк создателя токена.
+
+        Returns:
+            :class:`TradeDecision` при попытке усреднения, ``None`` — если
+            сигнал не сильный (решение об удержании остаётся за выходом).
+        """
+        if not self._portfolio.can_open(capital_sol=self._capital_sol):
+            return None
+        if self._blocked_until.get(pool.pool_address, 0.0) > event.timestamp:
+            return None
+        if not self._token_reliable(pool, event.timestamp):
+            return None
+
+        metrics = self._indicators.window_metrics(
+            pool.pool_address, self._entry_window_seconds, now=event.timestamp
+        )
+        security = await self._security_provider(pool)
+        context = self._build_context(pool, metrics, security, event.timestamp)
+        signal = self._strategy.evaluate_entry(context)
+        if signal.action != SignalAction.ENTER:
+            return None
+
+        try:
+            entry_quote = quote_entry(pool, sol_amount_sol=self._trade_amount_sol)
+            order = build_buy_order(pool, creator=creator, quote=entry_quote)
+        except OrderBuildError as exc:
+            return TradeDecision(
+                action=SignalAction.HOLD,
+                reason=f"заявка усреднения не собрана: {exc}",
+                signal=signal,
+            )
+
+        result = await self._executor.execute_buy(order)
+        if not result.success or not result.confirmed:
+            self._block_for(pool.pool_address, event.timestamp)
+            return TradeDecision(
+                action=SignalAction.ENTER,
+                reason=result.error or "ордер усреднения отклонён",
+                signal=signal,
+                order=result,
+            )
+
+        updated = self._portfolio.add_to_position(
+            position.base_mint,
+            added_tokens=result.token_amount,
+            added_sol=result.sol_amount,
+        )
+        logger.info(
+            "Усреднение {}: +{:.4f} SOL (+{:.4f} токенов), входов {} / {}",
+            position.base_mint,
+            result.sol_amount,
+            result.token_amount,
+            updated.entries_count if updated else "?",
+            self._max_entries_per_mint,
+        )
+        return TradeDecision(
+            action=SignalAction.ENTER,
+            reason=f"усреднение позиции: {signal.reason}",
             signal=signal,
             order=result,
         )
@@ -599,6 +727,7 @@ class MomentumTrader:
         pool: PoolInfo,
         *,
         creator: str | None = None,
+        exit_reason: str = "manual",
     ) -> dict[str, object]:
         """Ручная продажа всей позиции (кнопка дашборда «Закрыть»).
 
@@ -610,6 +739,8 @@ class MomentumTrader:
             base_mint: Mint мемкоина.
             pool: Свежий снимок пула (для котировки).
             creator: Кошелёк создателя токена.
+            exit_reason: Причина закрытия для ``closed_trades``
+                (``"manual"`` — кнопка дашборда; свип использует свою).
 
         Returns:
             Словарь ``{ok, error?, sol?, tokens?, closed?}``.
@@ -638,11 +769,12 @@ class MomentumTrader:
                 sold_tokens=result.token_amount,
                 received_sol=result.sol_amount,
                 exit_price=exit_price,
-                exit_reason="manual",
+                exit_reason=exit_reason,
             )
             logger.info(
-                "Ручная продажа {}: {:+.4f} SOL за {:.4f} токенов",
+                "Продажа {} ({}): {:+.4f} SOL за {:.4f} токенов",
                 base_mint,
+                exit_reason,
                 result.sol_amount,
                 result.token_amount,
             )
@@ -681,6 +813,14 @@ class MomentumTrader:
                 return {"ok": False, "error": "усреднять можно только открытую позицию"}
             if position.pool_address != pool.pool_address:
                 return {"ok": False, "error": "несоответствие пула позиции"}
+            if position.entries_count >= self._max_entries_per_mint:
+                return {
+                    "ok": False,
+                    "error": (
+                        "лимит входов по минту исчерпан "
+                        f"({position.entries_count}/{self._max_entries_per_mint})"
+                    ),
+                }
             try:
                 entry_quote = quote_entry(pool, sol_amount_sol=self._trade_amount_sol)
                 order = build_buy_order(pool, creator=creator, quote=entry_quote)
