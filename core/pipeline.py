@@ -1201,6 +1201,11 @@ class LivePipeline:
                 "ok": False,
                 "error": f"Helius RPC недоступен: {exc} — проверьте DNS/сеть и HELIUS_API_KEY",
             }
+        except TimeoutError:
+            return {
+                "ok": False,
+                "error": "Helius RPC не ответил вовремя (таймаут) — повторите позже",
+            }
         except ReplayError as exc:
             return {"ok": False, "error": f"реплей не удался: {exc}"}
         except Exception as exc:

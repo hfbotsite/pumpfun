@@ -50,6 +50,7 @@ from models.trade_data import DEXType, TradeEvent, TradeSide
 from utils.constants import (
     PUMP_FUN_AMM_PROGRAM_ID,
     PUMP_FUN_PROGRAM_ID,
+    PUMP_FUN_VIRTUAL_SOL_BASE,
     PUMP_TOKEN_DECIMALS,
     PUMP_TRADE_EVENT_DISCRIMINATOR,
     PUMP_TRADE_EVENT_DISCRIMINATOR_LEN,
@@ -217,8 +218,12 @@ class PoolStreamListener:
         for program_id in (PUMP_FUN_PROGRAM_ID, PUMP_FUN_AMM_PROGRAM_ID):
             if program_id in self._subscribed_programs:
                 continue
+            # Обработчик знает программу-источник: bonding-curve декодер
+            # применять можно только к логам bonding curve (см. handler).
             token = await self._ws.subscribe_logs(
-                program_id, self._handle_logs_notification, commitment=self._commitment
+                program_id,
+                self._make_logs_handler(program_id),
+                commitment=self._commitment,
             )
             self._log_subscriptions.append(token)
             self._subscribed_programs.add(program_id)
@@ -294,11 +299,29 @@ class PoolStreamListener:
         await self.stop()
 
     # -------------------------------------------------------- Обработка логов
-    async def _handle_logs_notification(self, payload: dict[str, Any]) -> None:
+    def _make_logs_handler(self, program_id: str) -> Callable[[dict[str, Any]], Any]:
+        """Привязывает обработчик логов к программе-источнику.
+
+        Args:
+            program_id: Программа, на чьи логи подписан обработчик.
+
+        Returns:
+            Асинхронный колбэк для WS-клиента.
+        """
+
+        async def handler(payload: dict[str, Any]) -> None:
+            await self._handle_logs_notification(payload, program_id)
+
+        return handler
+
+    async def _handle_logs_notification(
+        self, payload: dict[str, Any], program_id: str | None = None
+    ) -> None:
         """Обрабатывает уведомление ``logsNotification``.
 
         Args:
             payload: Полезная нагрузка WS-уведомления.
+            program_id: Программа-источник логов (``None`` — неизвестна).
         """
         self.stats.log_notifications += 1
         value = payload.get("value")
@@ -308,6 +331,14 @@ class PoolStreamListener:
             return
         logs = value.get("logs")
         if not isinstance(logs, list):
+            return
+
+        # PumpSwap (pAMM) называет своё Anchor-событие тоже ``TradeEvent`` —
+        # дискриминатор совпадает с bonding curve, но раскладка полей другая.
+        # Декодировать его bonding-curve декодером нельзя: получаются мусорные
+        # mint/резервы/времена (вплоть до PnL +33M SOL в статистике).
+        if program_id is not None and program_id != PUMP_FUN_PROGRAM_ID:
+            self.stats.dropped_events += 1
             return
 
         started = now_us()
@@ -333,6 +364,23 @@ class PoolStreamListener:
             event: Разобранное событие Pump.fun.
             signature: Подпись транзакции.
         """
+        # Санити-гейт (защита от дрейфа раскладки/будущих коллизий): реальные
+        # события кривой не нарушают этих границ — виртуальный резерв SOL
+        # всегда >= 30 (константа кривой), ордер <= 10k SOL, время живое.
+        now = time.time()
+        sane_ts = 0 < event.timestamp <= now + 120 and event.timestamp >= now - 86_400
+        sane_sol = (
+            event.sol_amount <= 10_000 * 10**SOL_DECIMALS
+            and event.virtual_sol_reserves >= PUMP_FUN_VIRTUAL_SOL_BASE * 10**SOL_DECIMALS
+        )
+        if not (sane_ts and sane_sol):
+            self.stats.dropped_events += 1
+            logger.debug(
+                "Событие отброшено санити-гейтом: ts={}, sol={}, virt_sol={}",
+                event.timestamp, event.sol_amount, event.virtual_sol_reserves,
+            )
+            return
+
         pool = self._registry.get_by_mint(event.mint)
         if pool is None:
             pool = await self._discover_bonding_curve(event.mint, signature)

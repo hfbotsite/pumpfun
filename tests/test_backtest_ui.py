@@ -191,8 +191,12 @@ class TestMintRpcFailure:
         )
         assert result["ok"] is False
         error = str(result["error"])
-        # Fallback на публичный RPC тоже не даёт событий в песочнице без сети:
-        assert "мало событий" in error or "Helius RPC недоступен" in error
+        # Fallback на публичный RPC зависит от сети песочницы: либо честная
+        # нехватка событий, либо недоступность/таймаут RPC — но не 500 без тела.
+        assert (
+            "мало событий" in error
+            or "Helius RPC" in error
+        )
 
 
 class TestBacktestCancellation:
