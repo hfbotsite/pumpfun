@@ -118,7 +118,7 @@ class TestScreeningCounts:
         assert counts["rejected"] == 0
 
         dirty = TokenSecurity(
-            mint_authority="Auth", freeze_authority=None, lp_burned_pct=100.0
+            mint_authority="Auth", freeze_authority=None, lp_burned_pct=10.0
         )
         service2 = TokenScreeningService(FakeResolver(dirty))
         await service2.start()
@@ -127,7 +127,7 @@ class TestScreeningCounts:
             await wait_until(lambda: service2.counts()["rejected"] == 1)
             rejections = service2.recent_rejections()
             assert len(rejections) == 1
-            assert "mint authority" in rejections[0].reason
+            assert "LP" in rejections[0].reason
         finally:
             await service2.stop()
 
@@ -369,3 +369,32 @@ class TestBotMode:
         # ветка позиций уже пройдена, значит вернулась либо ok, либо ошибка
         # кошелька; главное — НЕ блокировка позициями.
         assert "закройте" not in str(result.get("error", ""))
+
+
+class TestHoldReasonFunnel:
+    """Воронка причин HOLD для блока «Отбор токенов»."""
+
+    def test_reasons_bucketed_and_sorted(self) -> None:
+        """Причины классифицируются по бакетам и отдаются по убыванию."""
+        pipeline = LivePipeline(dry_run=True)
+        pipeline._count_hold_reason("токен младше окна надёжности (60 c от обнаружения)")
+        pipeline._count_hold_reason("liquidity_guard: недостаточная ликвидность кривой")
+        pipeline._count_hold_reason("liquidity_guard: недостаточная ликвидность кривой")
+        pipeline._count_hold_reason("низкая Volume Velocity 0.500 < 1.20 SOL")
+        pipeline._count_hold_reason("совсем непонятная причина")
+        top = pipeline._top_hold_reasons(5)
+        assert top == {
+            "ликвидность (MIN_REAL_POOL_SOL)": 2,
+            "окно надёжности (< 60 c)": 1,
+            "низкая Volume Velocity": 1,
+            "другое": 1,
+        }
+
+    def test_snapshot_exposes_hold_reasons(self) -> None:
+        """dashboard_snapshot содержит hold_reasons в секции screening."""
+        pipeline = LivePipeline(dry_run=True)
+        pipeline._count_hold_reason("низкая Volume Velocity 0.5 SOL")
+        snapshot = pipeline.dashboard_snapshot()
+        assert snapshot["screening"]["hold_reasons"] == {
+            "низкая Volume Velocity": 1
+        }

@@ -2,10 +2,10 @@
 
 Модуль выделяет проверку контракта в отдельный контур, отделённый от
 горячего пути торговли: каждый **новый** mint при первом обнаружении
-попадает в очередь службы, проверяется по правилам security-контура
-(``REQUIRE_MINT_AUTHORITY_NULL``, ``REQUIRE_FREEZE_AUTHORITY_NULL``,
-``MIN_LP_BURNED_PCT``) и получает вердикт — задолго до любого торгового
-сигнала.
+попадает в очередь службы, проверяется по правилу security-контура
+(``MIN_LP_BURNED_PCT``) и получает вердикт — задолго до любого торгового
+сигнала. Проверки mint/freeze authority убраны (решение от 2026-11-09):
+«нет данных безопасности» не отклоняет токен — его оценивают фильтры входа.
 
 Ключевые свойства:
 
@@ -314,21 +314,18 @@ class TokenScreeningService:
             lp_burned=pool.lp_burned,
         )
         if security is None:
-            return self._rejected(pool.base_mint, None, "нет данных безопасности")
-        if settings.require_mint_authority_null and not security.mint_authority_is_null:
-            return self._rejected(
-                pool.base_mint,
-                security,
-                f"mint authority активен: {security.mint_authority}",
-            )
-        if (
-            settings.require_freeze_authority_null
-            and not security.freeze_authority_is_null
-        ):
-            return self._rejected(
-                pool.base_mint,
-                security,
-                f"freeze authority активен: {security.freeze_authority}",
+            # Данных безопасности нет (RPC-сбой/новизна токена): токен НЕ
+            # отклоняем — его оценивают остальные фильтры входа (ликвидность,
+            # импульс). lp_burned_pct=100 = «нет применимых LP-данных».
+            return ScreeningVerdict(
+                base_mint=pool.base_mint,
+                approved=True,
+                reason=(
+                    "данные безопасности недоступны — допущен по фильтрам "
+                    "входа (ликвидность, импульс)"
+                ),
+                lp_burned_pct=100.0,
+                checked_at=time.time(),
             )
         if security.lp_burned_pct < settings.min_lp_burned_pct:
             return self._rejected(

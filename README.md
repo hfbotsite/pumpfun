@@ -206,9 +206,10 @@ cp .env.example .env   # заполните HELIUS_API_KEY и кошелёк
 | `COMPUTE_UNIT_LIMIT` / `PRIORITY_FEE_MICRO_LAMPORTS` | `200000/1000000` | Compute Budget; 1M µL/CU ≈ 0.0002 SOL приоритетки на транзакцию |
 | `HARD_STOP_LOSS_PCT` | `30` | Жёсткий стоп-лосс, % от входа |
 | `MAX_HOLD_SECONDS` | `180` | Принудительный выход по таймауту, c |
-| `REQUIRE_MINT/FREEZE_AUTHORITY_NULL`, `MIN_LP_BURNED_PCT` | `true/true/90` | Правила контура отбора (применяются до торговли, см. архитектуру) |
+| `MIN_LP_BURNED_PCT` | `90` | Правило контура отбора: минимальная доля сожжённого/залоченного LP (mint/freeze authority не проверяются — решение 2026-11-09) |
 | `SCREEN_RECHECK_SECONDS` | `600` | TTL вердикта отбора до повторной проверки |
 | `TOKEN_RELIABLE_SECONDS` | `60` | Возраст токена с момента обнаружения, после которого разрешены входы/усреднения («окно надёжности»), c |
+| `VOLUME_VELOCITY_THRESHOLD` | `1.2` | Минимальный объём покупок за окно входа, SOL (порог стратегии) |
 | `RETRY_COOLDOWN_SECONDS` | `2` | Пауза перед повторным входом по пулу после неуспешного ордера, c |
 | `MAINTENANCE_INTERVAL_SECONDS` / `STALE_POOL_SECONDS` | `60/600` | Обслуживание пайплайна: интервал сводки / возраст «молчащего» пула до удаления, c |
 | `SECURITY_TTL_SECONDS` | `30` | TTL кэша данных безопасности в RPC-резолвере, c |

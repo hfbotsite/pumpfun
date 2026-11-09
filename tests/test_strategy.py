@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from config.settings import settings
 from filters.base_filter import FilterChain, FilterContext
 from filters.liquidity_guard import LiquidityGuard
 from models.trade_data import MomentumMetrics, TokenSecurity
@@ -256,10 +257,10 @@ class TestDefaults:
     """Пороги по умолчанию соответствуют ТЗ."""
 
     def test_default_thresholds(self) -> None:
-        """Проверка значений по умолчанию из настроек окружения."""
+        """Пороги берутся из настроек окружения (не захардкожены)."""
         strategy = MomentumPumpStrategy()
-        assert strategy.buy_sell_ratio_threshold == 0.70
-        assert strategy.volume_velocity_threshold == 1.5
+        assert strategy.buy_sell_ratio_threshold == settings.buy_sell_ratio_threshold
+        assert strategy.volume_velocity_threshold == settings.volume_velocity_threshold
 
     def test_custom_filter_chain_used(self) -> None:
         """Явная цепочка фильтров перекрывает дефолтную."""

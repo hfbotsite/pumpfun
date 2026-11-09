@@ -215,12 +215,6 @@ class Settings(BaseSettings):
         default=30.0, gt=0,
         description="TTL кэша данных безопасности токена в RPC-резолвере, c.",
     )
-    require_mint_authority_null: bool = Field(
-        default=True, description="Требовать mint authority == None."
-    )
-    require_freeze_authority_null: bool = Field(
-        default=True, description="Требовать freeze authority == None."
-    )
     min_lp_burned_pct: float = Field(
         default=90.0, ge=0, le=100, description="Минимальная доля сожжённого/залоченного LP, %."
     )

@@ -85,22 +85,15 @@ class TestScreenRules:
         assert verdict.lp_burned_pct == 100.0
         assert verdict.checked_at > 0
 
-    async def test_mint_authority_rejected(self) -> None:
-        """Активный mint authority — отказ с адресом в причине."""
-        dirty = clean_security().model_copy(update={"mint_authority": "Auth"})
+    async def test_active_authorities_not_checked(self) -> None:
+        """Mint/freeze authority больше не влияют на вердикт (2026-11-09)."""
+        dirty = clean_security().model_copy(
+            update={"mint_authority": "Auth", "freeze_authority": "Freeze"}
+        )
         service = TokenScreeningService(FakeResolver(dirty))
         verdict = await service.screen(make_pool())
-        assert not verdict.approved
-        assert "mint authority" in verdict.reason
-        assert verdict.mint_authority == "Auth"
-
-    async def test_freeze_authority_rejected(self) -> None:
-        """Активный freeze authority — отказ."""
-        dirty = clean_security().model_copy(update={"freeze_authority": "Freeze"})
-        service = TokenScreeningService(FakeResolver(dirty))
-        verdict = await service.screen(make_pool())
-        assert not verdict.approved
-        assert "freeze authority" in verdict.reason
+        assert verdict.approved
+        assert verdict.reason == "контракт чист"
 
     async def test_low_lp_burn_rejected(self) -> None:
         """LP сожжён ниже порога — отказ."""
@@ -110,13 +103,14 @@ class TestScreenRules:
         assert not verdict.approved
         assert "LP" in verdict.reason
 
-    async def test_missing_security_rejected(self) -> None:
-        """Сбой RPC (нет данных) — отказ (fail-closed)."""
+    async def test_missing_security_approved_by_other_filters(self) -> None:
+        """Сбой RPC (нет данных) — НЕ отказ: решают фильтры входа."""
         service = TokenScreeningService(FakeResolver(None))
         verdict = await service.screen(make_pool())
-        assert not verdict.approved
-        assert "нет данных" in verdict.reason
-        assert verdict.mint_authority is None
+        assert verdict.approved
+        assert "данные безопасности недоступны" in verdict.reason
+        # to_security() от такого вердикта проходит SecurityGuard.
+        assert verdict.to_security().lp_burned_pct == 100.0
 
 
 class TestWorkerAndProvider:
@@ -150,8 +144,8 @@ class TestWorkerAndProvider:
         assert service.status(BASE_MINT) == "pending"
 
     async def test_provider_rejected_returns_none(self) -> None:
-        """Отклонённый токен не пропускается провайдером."""
-        dirty = clean_security().model_copy(update={"mint_authority": "Auth"})
+        """Отклонённый токен (LP не сожжён) не пропускается провайдером."""
+        dirty = clean_security().model_copy(update={"lp_burned_pct": 10.0})
         service = TokenScreeningService(FakeResolver(dirty))
         await service.start()
         try:
@@ -195,7 +189,7 @@ class TestWorkerAndProvider:
         async def callback(verdict: ScreeningVerdict) -> None:
             rejected.append(verdict)
 
-        dirty = clean_security().model_copy(update={"freeze_authority": "F"})
+        dirty = clean_security().model_copy(update={"lp_burned_pct": 10.0})
         service = TokenScreeningService(
             FakeResolver(dirty), on_rejected=callback
         )
@@ -220,7 +214,7 @@ class TestPersistenceRoundtrip:
         """Вердикты сохраняются в БД и восстанавливаются новой службой."""
         db_path = tmp_path / "bot.db"
         store = PortfolioStore(db_path)
-        dirty = clean_security().model_copy(update={"mint_authority": "Auth"})
+        dirty = clean_security().model_copy(update={"lp_burned_pct": 10.0})
         service = TokenScreeningService(
             FakeResolver(dirty), store=store, recheck_seconds=0
         )
@@ -238,7 +232,7 @@ class TestPersistenceRoundtrip:
         verdict = service2.verdict(BASE_MINT)
         assert verdict is not None
         assert verdict.approved is False
-        assert "mint authority" in verdict.reason
+        assert "LP" in verdict.reason
         # Провайдер не пропустит восстановленный «отказ».
         assert await service2.provider(make_pool()) is None
         store2.close()

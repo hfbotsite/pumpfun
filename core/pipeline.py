@@ -197,6 +197,7 @@ class LivePipeline:
         self._dashboard: DashboardServer | None = None
 
         self._pnl_curve: list[tuple[float, float]] = []
+        self._hold_reasons: dict[str, int] = {}
         self._backtest_stop: asyncio.Event | None = None
         self._backtest_run_id: str = ""
         self._started: bool = False
@@ -648,6 +649,7 @@ class LivePipeline:
             },
             "screening": {
                 **screening_counts,
+                "hold_reasons": self._top_hold_reasons(5),
                 "recent_rejections": [
                     {
                         "base_mint": verdict.base_mint,
@@ -659,6 +661,45 @@ class LivePipeline:
             "pnl_curve": self._pnl_curve[-300:],
             "logs": self._dashboard.log_tail() if self._dashboard else [],
         }
+
+    # ------------------------------------------------------- Воронка причин HOLD
+    _HOLD_REASON_BUCKETS: tuple[tuple[str, str], ...] = (
+        ("надёжности", "окно надёжности (< 60 c)"),
+        ("ликвидн", "ликвидность (MIN_REAL_POOL_SOL)"),
+        ("volume velocity", "низкая Volume Velocity"),
+        ("buy/sell", "низкий Buy/Sell Ratio"),
+        ("безопасност", "безопасность токена"),
+        ("импульс", "нет импульса"),
+        ("пауза", "пауза после неуспешного ордера"),
+        ("метрик", "нет метрик"),
+    )
+
+    def _count_hold_reason(self, reason: str) -> None:
+        """Классифицирует причину HOLD и увеличивает её счётчик.
+
+        Args:
+            reason: Человекочитаемая причина из :class:`TradeDecision`.
+        """
+        low = reason.lower()
+        for pattern, label in self._HOLD_REASON_BUCKETS:
+            if pattern in low:
+                self._hold_reasons[label] = self._hold_reasons.get(label, 0) + 1
+                return
+        self._hold_reasons["другое"] = self._hold_reasons.get("другое", 0) + 1
+
+    def _top_hold_reasons(self, limit: int = 5) -> dict[str, int]:
+        """Топ причин удержания (для блока «Отбор токенов»).
+
+        Args:
+            limit: Сколько причин вернуть.
+
+        Returns:
+            Словарь «причина → число событий», по убыванию счётчика.
+        """
+        if not self._hold_reasons:
+            return {}
+        top = sorted(self._hold_reasons.items(), key=lambda kv: -kv[1])[:limit]
+        return dict(top)
 
     def _is_curve_pool(self, pool_address: str) -> bool:
         """Проверяет стадию пула в реестре (кривая или AMM).
@@ -1477,6 +1518,8 @@ class LivePipeline:
         decision = await self.trader.process_event(
             event, pool.to_pool_info(), creator=pool.creator
         )
+        if decision.action == SignalAction.HOLD:
+            self._count_hold_reason(decision.reason)
 
         if decision.order is not None:
             if decision.order.success:

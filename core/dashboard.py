@@ -288,10 +288,16 @@ function render(d){
 
   const sc=d.screening||{};
   const rj=(sc.recent_rejections||[]).map(r=>`<li><code>${esc(short(r.base_mint))}</code> — ${esc(r.reason)}</li>`).join('');
+  const hr=Object.entries(sc.hold_reasons||{});
+  const hrHtml=hr.length
+    ?`<div class="k" style="margin-top:8px">почему нет входа (воронка фильтров):</div>`+
+     hr.map(([k,v])=>`<div class="row"><span class="k">${esc(k)}</span><span>${v}</span></div>`).join('')
+    :'';
   $('screen').innerHTML=`
    <div class="row"><span class="k">ждут проверки</span><span>${sc.pending??0}</span></div>
    <div class="row"><span class="k">одобрено</span><span class="pos">${sc.approved??0}</span></div>
    <div class="row"><span class="k">отклонено</span><span class="neg">${sc.rejected??0}</span></div>
+   ${hrHtml}
    ${rj?`<ul>${rj}</ul>`:''}`;
 
   const lat=d.latency||{};

@@ -134,25 +134,17 @@ class TestSecurityGuard:
         result = guard.evaluate(make_context(security=None))
         assert not result.passed
 
-    def test_mint_authority_active_rejected(self) -> None:
-        """Активный mint authority — отказ."""
+    def test_active_authorities_not_checked(self) -> None:
+        """Mint/freeze authority больше не проверяются (решение 2026-11-09)."""
         security = clean_security().model_copy(
-            update={"mint_authority": "Auth111111111111111111111111111111111111"}
+            update={
+                "mint_authority": "Auth111111111111111111111111111111111111",
+                "freeze_authority": "Freeze111111111111111111111111111111111",
+            }
         )
         guard = SecurityGuard()
         result = guard.evaluate(make_context(security=security))
-        assert not result.passed
-        assert "mint" in result.reason.lower()
-
-    def test_freeze_authority_active_rejected(self) -> None:
-        """Активный freeze authority — отказ."""
-        security = clean_security().model_copy(
-            update={"freeze_authority": "Freeze111111111111111111111111111111111"}
-        )
-        guard = SecurityGuard()
-        result = guard.evaluate(make_context(security=security))
-        assert not result.passed
-        assert "freeze" in result.reason.lower()
+        assert result.passed
 
     def test_low_lp_burn_rejected(self) -> None:
         """LP сожжён ниже 90% — отказ."""
