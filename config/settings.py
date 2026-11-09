@@ -73,7 +73,7 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------- Торговые параметры
     trade_amount_sol: float = Field(
-        default=0.5, gt=0, description="Размер входного ордера в SOL."
+        default=0.02, gt=0, description="Размер входного ордера в SOL."
     )
     buy_slippage_pct: float = Field(
         default=15.0, ge=0, lt=100, description="Проскальзывание на вход, %."
@@ -85,7 +85,7 @@ class Settings(BaseSettings):
         default=30.0, ge=0, description="Минимальная ликвидность AMM-пула, SOL."
     )
     min_real_pool_sol: float = Field(
-        default=50.0, ge=0,
+        default=80.0, ge=0,
         description=(
             "Минимальные РЕАЛЬНЫЕ резервы bonding curve, SOL "
             "(виртуальный резерв = реальные + 30 SOL, порог по виртуальным фиктивен)."
@@ -94,8 +94,17 @@ class Settings(BaseSettings):
     max_price_impact_pct: float = Field(
         default=5.0, gt=0, lt=100, description="Предельный Price Impact ордера, %."
     )
-    max_concurrent_positions: int = Field(
-        default=3, ge=1, description="Максимум одновременно открытых позиций."
+    token_reliable_seconds: float = Field(
+        default=60.0, gt=0,
+        description=(
+            "Возраст токена с момента обнаружения, после которого он считается "
+            "надёжным: входы/усреднения разрешены только по токенам старше "
+            "этого порога."
+        ),
+    )
+    max_entries_per_mint: int = Field(
+        default=10, ge=1,
+        description="Максимум входов по одному mint (вход + усреднения).",
     )
     capital_sol: float | None = Field(
         default=None, gt=0, description="Лимит свободного капитала, SOL (None — без лимита)."

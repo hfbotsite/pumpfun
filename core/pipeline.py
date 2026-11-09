@@ -138,7 +138,6 @@ class LivePipeline:
         *,
         dry_run: bool = False,
         watchlist: Sequence[str] = (),
-        max_concurrent_positions: int | None = None,
         capital_sol: float | None = None,
         close_positions_on_stop: bool = False,
         maintenance_interval_seconds: float | None = None,
@@ -150,7 +149,6 @@ class LivePipeline:
         Args:
             dry_run: Не отправлять транзакции (бумажное исполнение).
             watchlist: Mint-адреса, которые нужно отслеживать с момента старта.
-            max_concurrent_positions: Максимум одновременно открытых позиций
                 (``None`` — из настроек).
             capital_sol: Ограничение свободного капитала, SOL (``None`` — из
                 настроек).
@@ -165,12 +163,6 @@ class LivePipeline:
         """
         self._dry_run = dry_run
         self._watchlist = tuple(watchlist)
-        self._max_concurrent_positions = max(
-            1,
-            settings.max_concurrent_positions
-            if max_concurrent_positions is None
-            else max_concurrent_positions,
-        )
         self._capital_sol = (
             settings.capital_sol if capital_sol is None else capital_sol
         )
@@ -302,16 +294,12 @@ class LivePipeline:
                 else settings.portfolio_db_path
             )
 
-        self._portfolio = PortfolioManager(
-            max_concurrent_positions=self._max_concurrent_positions,
-            store=self._store,
-        )
+        self._portfolio = PortfolioManager(store=self._store)
         restored = self._portfolio.load_open_positions()
         if restored:
             logger.warning(
-                "Рестарт с открытыми позициями: лимит {}, занято {} — новые "
-                "входы ограничены, пока восстановленные позиции не закроются",
-                self._max_concurrent_positions,
+                "Рестарт с открытыми позициями: занято {} — новые входы "
+                "ограничены, пока восстановленные позиции не закроются",
                 self._portfolio.open_count,
             )
 
@@ -420,9 +408,8 @@ class LivePipeline:
         self.stats = PipelineStats(started_at=time.time())
         self._last_maintenance = time.monotonic()
         logger.info(
-            "Торговля запущена: mode={}, positions={}, watchlist={}",
+            "Торговля запущена: mode={}, watchlist={}",
             "dry-run" if self._dry_run else "live",
-            self._max_concurrent_positions,
             list(self._watchlist) or "-",
         )
 
@@ -612,7 +599,6 @@ class LivePipeline:
                 "wallet": getattr(self._executor, "wallet", "—"),
                 "db": self._db_path or "—",
                 "positions_open": len(positions),
-                "positions_limit": self._max_concurrent_positions,
                 "reserved_sol": getattr(trader.portfolio, "_reserved_sol", 0.0)
                 if trader is not None
                 else 0.0,

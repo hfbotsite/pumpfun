@@ -39,7 +39,7 @@ class TestOpenLimits:
 
     def test_open_and_count(self) -> None:
         """Успешное открытие учитывается в open_count и reserved_sol."""
-        manager = PortfolioManager(max_concurrent_positions=2)
+        manager = PortfolioManager()
         assert open_default(manager) is not None
         assert manager.open_count == 1
         assert manager.stats is not None
@@ -51,16 +51,16 @@ class TestOpenLimits:
         assert open_default(manager) is None
         assert manager.open_count == 1
 
-    def test_limit_blocks(self) -> None:
-        """Лимит позиций блокирует лишние открытия."""
-        manager = PortfolioManager(max_concurrent_positions=1)
+    def test_multiple_mints_ok(self) -> None:
+        """Разные mints открываются одновременно (лимит мятов убран)."""
+        manager = PortfolioManager()
         assert open_default(manager) is not None
-        assert open_default(manager, base_mint="Mint2", signature="sig-2") is None
-        assert manager.open_count == 1
+        assert open_default(manager, base_mint="Mint2", signature="sig-2") is not None
+        assert manager.open_count == 2
 
     def test_capital_blocks(self) -> None:
         """Исчерпание капитала блокирует вход."""
-        manager = PortfolioManager(max_concurrent_positions=5)
+        manager = PortfolioManager()
         assert manager.can_open(capital_sol=1.0)
         open_default(manager)  # резерв 0.5 SOL
         # Остаток 0.5-0.5 = 0 → вход закрыт; с запасом — открыт.
@@ -72,15 +72,6 @@ class TestOpenLimits:
         manager = PortfolioManager()
         try:
             open_default(manager, entry_price=-1.0)
-        except PortfolioError:
-            pass
-        else:
-            raise AssertionError("ожидался PortfolioError")
-
-    def test_zero_limit_rejected(self) -> None:
-        """Лимит < 1 запрещён на уровне конструктора."""
-        try:
-            PortfolioManager(max_concurrent_positions=0)
         except PortfolioError:
             pass
         else:
@@ -174,12 +165,12 @@ class TestWriteThrough:
         """Открытая позиция переживает пересоздание менеджера."""
         db_path = tmp_path / "portfolio.db"
         store = PortfolioStore(db_path)
-        manager = PortfolioManager(max_concurrent_positions=2, store=store)
+        manager = PortfolioManager(store=store)
         open_default(manager)
         store.close()
 
         store2 = PortfolioStore(db_path)
-        manager2 = PortfolioManager(max_concurrent_positions=2, store=store2)
+        manager2 = PortfolioManager(store=store2)
         assert manager2.load_open_positions() == 1
         restored = manager2.get(BASE_MINT)
         assert restored is not None
@@ -225,20 +216,20 @@ class TestWriteThrough:
         assert summary["pnl_sol"] == 0.1
         store.close()
 
-    def test_reopened_limit_after_restore(self, tmp_path) -> None:
-        """Восстановленные позиции учитываются лимитом concurrent."""
+    def test_recovered_positions_manageable(self, tmp_path) -> None:
+        """Восстановленные позиции управляются: можно докупать и закрывать."""
         db_path = tmp_path / "portfolio.db"
         store = PortfolioStore(db_path)
-        manager = PortfolioManager(max_concurrent_positions=2, store=store)
+        manager = PortfolioManager(store=store)
         open_default(manager)
         store.close()
 
         store2 = PortfolioStore(db_path)
-        manager2 = PortfolioManager(max_concurrent_positions=2, store=store2)
+        manager2 = PortfolioManager(store=store2)
         manager2.load_open_positions()
-        assert manager2.can_open()  # лимит 2, занята 1
+        assert manager2.can_open()
         assert open_default(manager2, base_mint="MintX", signature="sx") is not None
-        assert not manager2.can_open()  # лимит исчерпан
+        assert manager2.open_count == 2
         store2.close()
 
 

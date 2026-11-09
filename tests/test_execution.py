@@ -220,7 +220,7 @@ class TestDefaults:
         assert Settings.model_fields["use_jupiter_fallback"].default is False
         assert Settings.model_fields["priority_fee_micro_lamports"].default == 1_000_000
         assert Settings.model_fields["buy_slippage_pct"].default == 15.0
-        assert Settings.model_fields["min_real_pool_sol"].default == 50.0
+        assert Settings.model_fields["min_real_pool_sol"].default == 80.0
 
     def test_operations_defaults(self) -> None:
         """Поведенческие значения выведены в конфиг (не захардкожены)."""

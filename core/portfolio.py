@@ -13,7 +13,7 @@
 
 Ключевые инварианты:
 
-* одновременно открыто не более ``max_concurrent_positions`` позиций;
+* число входов по одному mint ограничено (вход + усреднения);
 * по одному ``base_mint`` не может быть двух позиций (скальпинг не усредняет);
 * частичная продажа уменьшает ``token_amount`` и увеличивает ``realized_sol``;
 * позиция удаляется, когда остаток токенов равен нулю.
@@ -137,7 +137,6 @@ class PortfolioManager:
 
     __slots__ = (
         "_closed",
-        "_max_positions",
         "_positions",
         "_reserved_sol",
         "_stats",
@@ -147,32 +146,21 @@ class PortfolioManager:
     def __init__(
         self,
         *,
-        max_concurrent_positions: int = 1,
         store: PortfolioStore | None = None,
     ) -> None:
         """Инициализирует пустой портфель.
 
         Args:
-            max_concurrent_positions: Максимум одновременно открытых позиций.
             store: SQLite-хранилище write-through (``None`` — только память).
 
-        Raises:
-            PortfolioError: Если лимит меньше единицы.
         """
-        if max_concurrent_positions < 1:
-            raise PortfolioError("max_concurrent_positions должен быть >= 1")
         self._positions: dict[str, Position] = {}
         self._closed: list[ClosedTrade] = []
         self._stats = PortfolioStats()
-        self._max_positions = max_concurrent_positions
         self._reserved_sol: float = 0.0
         self._store = store
 
     # ------------------------------------------------------------------ Свойства
-    @property
-    def max_concurrent_positions(self) -> int:
-        """Максимум одновременно открытых позиций."""
-        return self._max_positions
 
     @property
     def open_count(self) -> int:
@@ -225,8 +213,6 @@ class PortfolioManager:
         Returns:
             ``True``, если лимиты по числу позиций и капиталу не нарушены.
         """
-        if len(self._positions) >= self._max_positions:
-            return False
         if capital_sol is None:
             return True
         return capital_sol - self._reserved_sol > 0
@@ -285,8 +271,6 @@ class PortfolioManager:
         if base_mint in self._positions:
             logger.debug("Позиция по {} уже открыта — пропуск", base_mint)
             return None
-        if len(self._positions) >= self._max_positions:
-            return None
         if entry_price <= 0 or entry_sol <= 0 or token_amount <= 0:
             raise PortfolioError(
                 "Некорректные параметры открытия позиции: "
@@ -306,6 +290,7 @@ class PortfolioManager:
             tp1_taken=False,
             realized_sol=0.0,
             signature=signature,
+            entries_count=1,
         )
         self._positions[base_mint] = position
         self._reserved_sol += entry_sol
@@ -356,6 +341,7 @@ class PortfolioManager:
         position.token_amount += added_tokens
         position.initial_token_amount = position.token_amount
         position.entry_price = position.entry_sol / position.token_amount
+        position.entries_count += 1
         self._persist(position)
         logger.info(
             "Позиция {} усреднена: +{:.4f} токенов за {:.4f} SOL → "

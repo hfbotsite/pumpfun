@@ -201,7 +201,6 @@ async def _run_pipeline(args: argparse.Namespace) -> int:
     pipeline = LivePipeline(
         dry_run=args.dry_run,
         watchlist=args.watchlist,
-        max_concurrent_positions=args.positions,
         capital_sol=args.capital,
         close_positions_on_stop=args.close_on_stop,
         db_path=args.db,
@@ -259,10 +258,9 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     logger.info(
-        "Старт бота: mode={}, network={}, positions={}, db={}",
+        "Старт бота: mode={}, network={}, db={}",
         "dry-run" if args.dry_run else "LIVE",
         settings.solana_network,
-        args.positions if args.positions is not None else settings.max_concurrent_positions,
         _resolve_db_path(args),
     )
     try:

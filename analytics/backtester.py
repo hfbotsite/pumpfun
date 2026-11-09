@@ -388,9 +388,7 @@ class Backtester:
 
         return MomentumTrader(
             executor=self._executor,
-            portfolio=PortfolioManager(
-                max_concurrent_positions=self._max_concurrent_positions
-            ),
+            portfolio=PortfolioManager(),
             strategy=self._strategy,
             security_provider=provider,
             trade_amount_sol=self._trade_amount_sol,
