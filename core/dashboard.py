@@ -287,7 +287,6 @@ function render(d){
    <div class="row"><span class="k">ошибки разбора</span><span class="${(fl.parse_errors||0)>0?'warn':''}">${fl.parse_errors??0}</span></div>`;
 
   const sc=d.screening||{};
-  const rj=(sc.recent_rejections||[]).map(r=>`<li><code>${esc(short(r.base_mint))}</code> — ${esc(r.reason)}</li>`).join('');
   const hr=Object.entries(sc.hold_reasons||{});
   const hrHtml=hr.length
     ?`<div class="k" style="margin-top:8px">почему нет входа (воронка фильтров):</div>`+
@@ -297,8 +296,7 @@ function render(d){
    <div class="row"><span class="k">ждут проверки</span><span>${sc.pending??0}</span></div>
    <div class="row"><span class="k">одобрено</span><span class="pos">${sc.approved??0}</span></div>
    <div class="row"><span class="k">отклонено</span><span class="neg">${sc.rejected??0}</span></div>
-   ${hrHtml}
-   ${rj?`<ul>${rj}</ul>`:''}`;
+   ${hrHtml}`;
 
   const lat=d.latency||{};
   $('latency').innerHTML=Object.keys(lat).length
