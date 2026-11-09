@@ -13,6 +13,8 @@ import base64
 import time
 
 from core.listener import PoolStreamListener
+from core.pool_registry import TrackedPool
+from models.trade_data import DEXType
 from tests.test_decoders import build_trade_event_payload
 from utils.constants import (
     PUMP_FUN_AMM_PROGRAM_ID,
@@ -24,13 +26,23 @@ from utils.constants import (
 class FakeWs:
     """WS-заглушка: подписки аккаунтов успешны и без сети."""
 
-    async def subscribe_account(self, *_args: object, **_kwargs: object) -> int:
-        """Возвращает фиктивный id подписки.
+    def __init__(self) -> None:
+        """Пустой список адресов подписок аккаунтов."""
+        self.account_calls: list[str] = []
+
+    async def subscribe_account(
+        self, address: str, *_args: object, **_kwargs: object
+    ) -> int:
+        """Запоминает адрес и возвращает фиктивный id подписки.
+
+        Args:
+            address: Адрес аккаунта.
 
         Returns:
-            1.
+            Порядковый номер подписки.
         """
-        return 1
+        self.account_calls.append(address)
+        return len(self.account_calls)
 
 
 def make_listener() -> PoolStreamListener:
@@ -142,3 +154,39 @@ class TestSanityGate:
         payload = logs_payload(body, PUMP_FUN_PROGRAM_ID)
         await listener._handle_logs_notification(payload, PUMP_FUN_PROGRAM_ID)
         assert listener.trades.qsize() == 1
+
+
+class TestAccountSubscriptions:
+    """Подписки аккаунтов: кривая не подписывается, vault-пулы подписываются."""
+
+    async def test_bonding_curve_not_subscribed(self) -> None:
+        """Обнаружение кривой не создаёт accountSubscribe (лимит Helius)."""
+        listener = make_listener()
+        body = build_trade_event_payload(timestamp=int(time.time()))
+        payload = logs_payload(body, PUMP_FUN_PROGRAM_ID)
+        await listener._handle_logs_notification(payload, PUMP_FUN_PROGRAM_ID)
+        assert listener.trades.qsize() == 1
+        assert len(listener._registry) == 1
+        ws = listener._ws
+        assert isinstance(ws, FakeWs)
+        assert ws.account_calls == []
+
+    async def test_amm_pool_subscribes_vaults(self) -> None:
+        """AMM-пул без кривой подписывает свои vault-аккаунты."""
+        listener = make_listener()
+        pool = TrackedPool(
+            pool_address="Pool1111111111111111111111111111111111111111",
+            dex=DEXType.PUMP_FUN,
+            dex_program=PUMP_FUN_AMM_PROGRAM_ID,
+            base_mint="Mint11111111111111111111111111111111111111111",
+            quote_mint="So11111111111111111111111111111111111111112",
+            base_vault="BaseVault111111111111111111111111111111111111",
+            quote_vault="QuoteVault11111111111111111111111111111111111",
+        )
+        await listener._subscribe_pool_accounts(pool)
+        ws = listener._ws
+        assert isinstance(ws, FakeWs)
+        assert ws.account_calls == [
+            "BaseVault111111111111111111111111111111111111",
+            "QuoteVault11111111111111111111111111111111111",
+        ]

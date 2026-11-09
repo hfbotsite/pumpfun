@@ -412,8 +412,8 @@ class PoolStreamListener:
         """Создаёт и регистрирует пул bonding curve по mint.
 
         Адрес кривой выводится детерминированно (PDA), поэтому дополнительный
-        RPC-запрос не требуется; аккаунт кривой подписывается сразу, чтобы
-        резервы не «отставали» между событиями сделок.
+        RPC-запрос не требуется. Резервы приходят лог-событиями сделок;
+        accountSubscribe на кривую не оформляется (лимит подписок WS).
 
         Args:
             mint: Mint мемкоина.
@@ -454,11 +454,18 @@ class PoolStreamListener:
         return registered
 
     async def _subscribe_pool_accounts(self, pool: TrackedPool) -> None:
-        """Подписывается на аккаунты пула (кривая либо vault-аккаунты).
+        """Подписывается на аккаунты пула (vault-аккаунты AMM-пулов).
+
+        Bonding curve не подписывается: резервы кривой меняются только
+        сделками, а каждая сделка приходит лог-событием уже с новыми
+        виртуальными резервами — accountSubscribe на кривую избыточен и
+        выжигает лимит подписок Helius («Too many subscriptions»).
 
         Args:
             pool: Отслеживаемый пул.
         """
+        if pool.curve_address is not None:
+            return
         addresses = pool.account_addresses
         if not addresses:
             return
