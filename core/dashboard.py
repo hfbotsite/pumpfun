@@ -154,6 +154,9 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
     <svg id="chart" viewBox="0 0 300 80" preserveAspectRatio="none"></svg>
     <div class="row"><span class="k">нереализованный</span><span id="unreal">—</span></div>
   </section>
+  <section class="card"><h2>Поток сделок</h2><div id="stream"></div></section>
+  <section class="card"><h2>Отбор токенов</h2><div id="screen"></div></section>
+  <section class="card"><h2>Латентность (мс, p50 / p95)</h2><div id="latency">—</div></section>
   <section class="card wide"><div class="poshead">
       <h2>Открытые позиции</h2>
       <span class="spacer"></span>
@@ -162,9 +165,6 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
     </div>
     <div id="positions">—</div>
   </section>
-  <section class="card"><h2>Поток сделок</h2><div id="stream"></div></section>
-  <section class="card"><h2>Отбор токенов</h2><div id="screen"></div></section>
-  <section class="card"><h2>Латентность (мс, p50 / p95)</h2><div id="latency">—</div></section>
     <section class="card wide">
     <div class="poshead">
       <h2>Бэктест стратегии на исторических сделках</h2>
