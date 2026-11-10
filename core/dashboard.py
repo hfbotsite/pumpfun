@@ -387,6 +387,7 @@ $('botstoptrading').onclick=async()=>{
       body:JSON.stringify({action:'bot_stop'})});
     if(r.status===401){showLogin();return}
   }catch(e){}
+  refreshOnce();
 };
 $('botkill').onclick=async()=>{
   if(!confirm('ПОЛНОСТЬЮ остановить бота? Дашборд выключится вместе с ним. Перезапуск: systemctl start pumpbot (или вручную).'))return;
@@ -396,8 +397,9 @@ $('botkill').onclick=async()=>{
     if(r.status===401){showLogin();return}
   }catch(e){}
   if(es)es.close();
-  $('conn').textContent='⏹ торговля остановлена — возобновите кнопкой «Старт бота»';
+  $('conn').textContent='⏹ бот остановлен — процесс завершён. Перезапуск: systemctl start pumpbot (VPS) или python main.py (локально)';
   $('conn').style.color='var(--red)';
+  $('botstart').disabled=true;$('botstoptrading').disabled=true;
   $('botkill').disabled=true;$('logout').disabled=true;
 };
 $('logout').onclick=()=>{TOKEN='';localStorage.removeItem('dash_token');if(es)es.close();showLogin()};
