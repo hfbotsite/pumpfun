@@ -447,3 +447,43 @@ class TestTieredHardStop:
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
         assert signal is not None
         assert signal.exit_reason.value == "hard_stop_loss"
+
+
+class TestColdVelocityGate:
+    """Холодным пулам (< cold_volume_sol) — усиленный порог velocity."""
+
+    def test_cold_pool_requires_stronger_velocity(self) -> None:
+        """Объём пула 50 SOL (< 100), velocity 1.5 — HOLD (нужно 2.0)."""
+        strategy = MomentumPumpStrategy()
+        # make_entry_context использует make_pool() без объёма (0) — холодный класс.
+        metrics = hot_metrics(buy_count=6).model_copy(
+            update={"buy_volume_sol": 1.5}  # velocity 1.5 < холодных 2.0
+        )
+        signal = strategy.evaluate_entry(make_entry_context(metrics))
+        # Обычный контекст: пул без объёма (0) — тоже холодный класс.
+        assert signal.action.value == "hold"
+        assert "Volume Velocity" in signal.reason
+
+    def test_cold_pool_strong_velocity_enters(self) -> None:
+        """Холодный пул с velocity 2.5 (>= 2.0) — вход разрешён."""
+        strategy = MomentumPumpStrategy()
+        metrics = hot_metrics(buy_count=8)  # velocity 2.5
+        signal = strategy.evaluate_entry(make_entry_context(metrics))
+        assert signal.action.value == "enter"
+
+    def test_warm_pool_uses_base_threshold(self) -> None:
+        """Пул с объёмом >= 100 — обычный порог (1.5/1.2 из настроек)."""
+        strategy = MomentumPumpStrategy()
+        pool = make_pool(volume_sol=200.0)
+        metrics = hot_metrics(buy_count=8).model_copy(
+            update={"buy_volume_sol": 1.4}  # velocity 1.4 >= обычных 1.2
+        )
+        context = FilterContext(
+            pool=pool,
+            trade_amount_sol=0.5,
+            security=clean_security(),
+            metrics=metrics,
+            timestamp=1000.0,
+        )
+        signal = strategy.evaluate_entry(context)
+        assert signal.action.value == "enter"

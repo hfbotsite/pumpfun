@@ -65,6 +65,7 @@ class MomentumPumpStrategy(BaseStrategy):
         entry_filters: FilterChain | None = None,
         buy_sell_ratio_threshold: float | None = None,
         volume_velocity_threshold: float | None = None,
+        volume_velocity_cold_threshold: float | None = None,
         min_entry_buy_count: int | None = None,
         max_entry_price_gain_pct: float | None = None,
         tp1_pct: float | None = None,
@@ -90,6 +91,8 @@ class MomentumPumpStrategy(BaseStrategy):
                 ``LiquidityGuard`` + ``SecurityGuard``.
             buy_sell_ratio_threshold: Минимальная доля покупок для входа (0..1).
             volume_velocity_threshold: Минимальный объём покупок в окне, SOL.
+            volume_velocity_cold_threshold: Усиленный порог для «холодных»
+                пулов (объём торгов < cold_volume_sol), SOL.
             min_entry_buy_count: Минимальное число покупок в окне входа.
             max_entry_price_gain_pct: Максимальный рост цены за окно, %
                 (защита от погони за хвостом волны).
@@ -125,6 +128,11 @@ class MomentumPumpStrategy(BaseStrategy):
             settings.volume_velocity_threshold
             if volume_velocity_threshold is None
             else volume_velocity_threshold
+        )
+        self._volume_velocity_cold_threshold = (
+            settings.volume_velocity_cold_threshold
+            if volume_velocity_cold_threshold is None
+            else volume_velocity_cold_threshold
         )
         self._min_entry_buy_count = (
             settings.min_entry_buy_count
@@ -248,20 +256,27 @@ class MomentumPumpStrategy(BaseStrategy):
                 f"< {self._min_entry_buy_count} (вход за одним китом)",
             )
 
+        # Холодный пул (тонкий токен): микроволна там чаще ложная —
+        # требуем усиленный объём покупок, иначе мгновенный слив.
+        velocity_threshold = self._volume_velocity_threshold
+        if not self._is_hot_pool(context.pool):
+            volume = getattr(context.pool, "volume_sol", 0.0)
+            if volume < settings.cold_volume_sol:
+                velocity_threshold = self._volume_velocity_cold_threshold
+        velocity = metrics.volume_velocity_sol
+        if velocity < velocity_threshold:
+            return self._hold_signal(
+                context,
+                f"низкая Volume Velocity {velocity:.3f} < "
+                f"{velocity_threshold:.2f} SOL (окно {metrics.window_seconds:.1f}s)",
+            )
+
         ratio = metrics.buy_sell_ratio
         if ratio < self._buy_sell_ratio_threshold:
             return self._hold_signal(
                 context,
                 "низкий Buy/Sell Ratio "
                 f"{ratio:.3f} < {self._buy_sell_ratio_threshold:.2f}",
-            )
-
-        velocity = metrics.volume_velocity_sol
-        if velocity < self._volume_velocity_threshold:
-            return self._hold_signal(
-                context,
-                "низкая Volume Velocity "
-                f"{velocity:.3f} < {self._volume_velocity_threshold:.2f} SOL",
             )
 
         return self._enter_signal(

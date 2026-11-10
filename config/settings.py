@@ -184,6 +184,14 @@ class Settings(BaseSettings):
     volume_velocity_threshold: float = Field(
         default=1.5, gt=0, description="Минимальный объём покупок за окно, SOL."
     )
+    volume_velocity_cold_threshold: float = Field(
+        default=2.0, gt=0,
+        description=(
+            "Усиленный порог объёма покупок, SOL, для «холодных» пулов "
+            "(объём торгов < cold_volume_sol): отсекает вход за единичной "
+            "микроволной на тонком токене."
+        ),
+    )
     min_entry_buy_count: int = Field(
         default=3, ge=1,
         description=(
@@ -192,7 +200,7 @@ class Settings(BaseSettings):
         ),
     )
     max_entry_price_gain_pct: float = Field(
-        default=50.0, gt=0,
+        default=40.0, gt=0,
         description=(
             "Максимальный рост цены за окно входа, %: выше — «погоня за "
             "хвостом волны», вход запрещён."
@@ -272,6 +280,13 @@ class Settings(BaseSettings):
     )
     max_hold_seconds: float = Field(
         default=180.0, gt=0, description="Принудительный выход по таймауту, c."
+    )
+    silent_sweep_seconds: float = Field(
+        default=45.0, gt=0,
+        description=(
+            "Молчание пула с открытой позицией, c, после которого свип "
+            "пытается продать сразу — не дожидаясь MAX_HOLD."
+        ),
     )
 
     # ---------------------------------------------------------- Безопасность

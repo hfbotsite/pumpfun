@@ -262,7 +262,7 @@ class TestSweepStale:
     def make_pipeline(
         self, trader: MomentumTrader
     ) -> LivePipeline:
-        """Собирает dry-run пайплайн с подменённым пулом.
+        """Собирает dry-run пайплайн с живым пулом в реестре.
 
         Args:
             trader: Движок с позицией.
@@ -274,9 +274,23 @@ class TestSweepStale:
         async def fake_pool_for_mint(_mint: str) -> tuple[Any, Any, Any]:
             return (make_pool(created_at=0.0), None, None)
 
+        # Пул «живой» (события свежие) — свип тишины молчит, срабатывает
+        # именно MAX_HOLD.
+        tracked = type(
+            "T", (), {"last_update": time.time(), "volume_sol": 50.0}
+        )()
+
+        class FakeRegistry:
+            def get(self, _addr: str) -> Any:
+                return tracked
+
         pipeline = LivePipeline(dry_run=True)
         pipeline._trader = trader
+        pipeline._trading_started_at = time.time()
         pipeline._pool_for_mint = fake_pool_for_mint  # type: ignore[method-assign]
+        pipeline._listener = type(
+            "L", (), {"registry": FakeRegistry()}
+        )()  # type: ignore[assignment]
         return pipeline
 
     async def test_unsellable_stale_closed_as_loss(self) -> None:
@@ -347,3 +361,75 @@ class TestTieredStopLoss:
         loaded = store.load_open_positions()
         assert loaded and loaded[0].stop_loss_pct == 40.0
         store.close()
+
+
+class TestSilentSweep:
+    """Свип тишины: пул без событий дольше SILENT_SWEEP → продажа."""
+
+    def make_silent_pipeline(
+        self, trader: MomentumTrader, tracked
+    ) -> LivePipeline:
+        """Dry-run пайплайн с фиксированным пулом в реестре.
+
+        Args:
+            trader: Движок с позицией.
+            tracked: Пул-заглушка из реестра (или None).
+
+        Returns:
+            :class:`~core.pipeline.LivePipeline` без сети.
+        """
+
+        async def fake_pool_for_mint(_mint: str) -> tuple[Any, Any, Any]:
+            return (make_pool(created_at=0.0), None, None)
+
+        class FakeRegistry:
+            def get(self, _addr: str) -> Any:
+                return tracked
+
+        pipeline = LivePipeline(dry_run=True)
+        pipeline._trader = trader
+        pipeline._pool_for_mint = fake_pool_for_mint  # type: ignore[method-assign]
+        listener = type("L", (), {"registry": FakeRegistry()})()
+        pipeline._listener = listener  # type: ignore[assignment]
+        return pipeline
+
+    async def test_silent_pool_swept(self) -> None:
+        """Нет событий 60 c → позиция закрыта с причиной silent."""
+        executor = ManualExecutor()
+        executor.sell_results = [_failed_sell(), _failed_sell()]
+        trader = make_manual_trader(executor)  # позиция входом в 1000
+        tracked = type("T", (), {"last_update": 1000.0, "volume_sol": 50.0})()
+        pipeline = self.make_silent_pipeline(trader, tracked)
+        pipeline._trading_started_at = 1000.0
+        await pipeline._sweep_stale_positions(trader)
+        assert trader.portfolio.open_count == 0
+        trade = trader.portfolio.closed_trades[-1]
+        assert trade.exit_reason == "silent_unsellable"
+        # Молчание ≠ смерть: учётное закрытие по цене входа (не exit_price=0).
+        assert trade.exit_price == 1.0
+
+    async def test_active_pool_not_swept(self) -> None:
+        """Пул живой (события свежие) — позиция не трогается."""
+        executor = ManualExecutor()
+        executor.sell_results = [_failed_sell(), _failed_sell()]
+        trader = make_manual_trader(executor)
+        trader.portfolio.get(BASE_MINT).opened_at = time.time() - 10  # свежая
+        tracked = type(
+            "T", (), {"last_update": time.time(), "volume_sol": 50.0}
+        )()
+        pipeline = self.make_silent_pipeline(trader, tracked)
+        pipeline._trading_started_at = time.time()
+        await pipeline._sweep_stale_positions(trader)
+        assert trader.portfolio.open_count == 1
+        assert not executor.sell_calls
+
+    async def test_silence_counts_from_restart(self) -> None:
+        """Пул не в реестре сразу после рестарта — отсчёт от старта торговли."""
+        executor = ManualExecutor()
+        executor.sell_results = [_failed_sell(), _failed_sell()]
+        trader = make_manual_trader(executor)
+        trader.portfolio.get(BASE_MINT).opened_at = time.time() - 10  # свежая
+        pipeline = self.make_silent_pipeline(trader, None)
+        pipeline._trading_started_at = time.time()
+        await pipeline._sweep_stale_positions(trader)
+        assert trader.portfolio.open_count == 1

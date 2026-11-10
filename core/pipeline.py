@@ -63,6 +63,7 @@ from filters.liquidity_guard import real_pool_sol
 from models.trade_data import (
     DEXType,
     PoolInfo,
+    Position,
     SignalAction,
     TokenSecurity,
     TradeEvent,
@@ -204,6 +205,7 @@ class LivePipeline:
         self._started: bool = False
         self._trading_active: bool = False
         self._consume_task: asyncio.Task[None] | None = None
+        self._trading_started_at: float = 0.0
         self._sweep_task: asyncio.Task[None] | None = None
         self._fully_stopped = asyncio.Event()
         self._portfolio: PortfolioManager | None = None
@@ -410,6 +412,7 @@ class LivePipeline:
         self._trading_active = True
         self._running = True
         self.stats = PipelineStats(started_at=time.time())
+        self._trading_started_at = time.time()
         self._last_maintenance = time.monotonic()
         logger.info(
             "Торговля запущена: mode={}, watchlist={}",
@@ -1073,24 +1076,43 @@ class LivePipeline:
                 logger.exception("Ошибка свипа устаревших позиций")
 
     async def _sweep_stale_positions(self, trader: MomentumTrader) -> None:
-        """Закрывает позиции старше ``max_hold_seconds``.
+        """Закрывает зависшие позиции: молчащие пулы и MAX_HOLD.
 
-        Сначала обычная продажа через лестницу; если продать нечем
-        (пул мёртв/недоступен) — учётное закрытие по нулевой цене, т.е.
-        полный убыток в размере вложенного SOL (write-through: строка
-        открытой позиции удаляется из БД, пишется запись в closed_trades).
+        Свип тишины: если по пулу позиции нет событий дольше
+        ``silent_sweep_seconds`` — токен, вероятно, умер — продажа сразу,
+        не дожидаясь MAX_HOLD (раньше это превращалось в полный убыток).
+        Затем таймаут удержания («горячие» пулы живут дольше).
+
+        Продажа через лестницу; если продать нечем (dry-run, пул мёртв) —
+        учётное закрытие (write-through: позиция удалена из БД, запись в
+        closed_trades).
 
         Args:
             trader: Движок с портфелем открытых позиций.
         """
         now = time.time()
         for position in trader.portfolio.all_positions():
-            # «Горячие» пулы (объём >= порога) живут дольше: их холд ×N.
+            mint = position.base_mint
             tracked = (
                 self._listener.registry.get(position.pool_address)
                 if self._listener is not None
                 else None
             )
+            # --- Свип тишины: last_seen = max(событие пула, вход, старт) —
+            # после рестарта реестр пуст, это не признак смерти токена.
+            last_seen = max(
+                tracked.last_update if tracked is not None else 0.0,
+                position.opened_at,
+                self._trading_started_at,
+            )
+            if now - last_seen >= settings.silent_sweep_seconds:
+                await self._sweep_sell(
+                    trader, mint, position, tracked,
+                    reason="silent",
+                    note=f"молчание {now - last_seen:.0f} c",
+                )
+                continue
+            # --- Таймаут удержания: «горячие» пулы живут дольше.
             hot = (
                 tracked is not None
                 and tracked.volume_sol >= settings.hot_volume_sol
@@ -1100,39 +1122,70 @@ class LivePipeline:
             )
             if now - position.opened_at <= max_hold:
                 continue
-            mint = position.base_mint
-            age = now - position.opened_at
-            pool, creator, err = await self._pool_for_mint(mint)
-            if pool is not None:
-                outcome = await trader.manual_sell(
-                    mint, pool, creator=creator, exit_reason="max_hold"
-                )
-                if outcome.get("ok"):
-                    self._pnl_curve.append(
-                        (time.time(), trader.portfolio.stats.pnl_sol)
-                    )
-                    logger.info(
-                        "Свип: позиция {} закрыта по MAX_HOLD ({:.0f} c)", mint, age
-                    )
-                    continue
-                error = str(outcome.get("error", ""))
-            else:
-                error = err or "пул недоступен"
-            logger.warning(
-                "Свип: поза {} держится {:.0f} c > MAX_HOLD, продажа не удалась "
-                "({}) — закрытие убытком",
-                mint, age, error,
+            await self._sweep_sell(
+                trader, mint, position, tracked,
+                reason="max_hold",
+                note=f"держится {now - position.opened_at:.0f} c > MAX_HOLD",
             )
-            if not self._dry_run:
-                logger.critical(
-                    "LIVE: токены {} могли остаться в кошельке — позиция "
-                    "закрыта учётно (убыток учтён в статистике)",
-                    mint,
-                )
-            trader.portfolio.force_close(
-                mint, exit_price=0.0, exit_reason="max_hold_unsellable"
+
+    async def _sweep_sell(
+        self,
+        trader: MomentumTrader,
+        mint: str,
+        position: Position,
+        tracked: TrackedPool | None,
+        *,
+        reason: str,
+        note: str,
+    ) -> None:
+        """Продаёт зависшую позицию свипа; при неудаче — учётное закрытие.
+
+        Args:
+            trader: Движок с портфелем.
+            mint: Mint мемкоина.
+            position: Открытая позиция.
+            tracked: Пул из реестра (или ``None``).
+            reason: Причина свипа (``silent`` / ``max_hold``).
+            note: Человекочитаемое пояснение для лога.
+        """
+        pool, creator, err = await self._pool_for_mint(mint)
+        if pool is not None:
+            outcome = await trader.manual_sell(
+                mint, pool, creator=creator, exit_reason=reason
             )
-            self._pnl_curve.append((time.time(), trader.portfolio.stats.pnl_sol))
+            if outcome.get("ok"):
+                self._pnl_curve.append(
+                    (time.time(), trader.portfolio.stats.pnl_sol)
+                )
+                logger.info("Свип: позиция {} закрыта ({})", mint, note)
+                return
+            error = str(outcome.get("error", ""))
+        else:
+            error = err or "пул недоступен"
+        logger.warning(
+            "Свип: поза {} ({}), продажа не удалась ({})",
+            mint, note, error,
+        )
+        if not self._dry_run:
+            # LIVE: токены реальны — молчание не повод списывать позицию;
+            # попытка повторится в следующем цикле свипа.
+            logger.critical(
+                "LIVE: свип не смог продать {} — позиция остаётся открытой, "
+                "токены в кошельке",
+                mint,
+            )
+            return
+        # dry-run: бумажная позиция — учётное закрытие по последней известной
+        # цене входа (молчание ≠ смерть; полный убыток только для MAX_HOLD).
+        exit_price = (
+            position.entry_price if reason == "silent" else 0.0
+        )
+        trader.portfolio.force_close(
+            mint,
+            exit_price=exit_price,
+            exit_reason=f"{reason}_unsellable",
+        )
+        self._pnl_curve.append((time.time(), trader.portfolio.stats.pnl_sol))
 
     # ------------------------------------------------------------- Бэктест
     @staticmethod
