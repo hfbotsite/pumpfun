@@ -296,7 +296,6 @@ function render(d){
      hr.map(([k,v])=>`<div class="row"><span class="k">${esc(k)}</span><span>${v}</span></div>`).join('')
     :'';
   $('screen').innerHTML=`
-   <div class="row"><span class="k">ждут проверки</span><span>${sc.pending??0}</span></div>
    <div class="row"><span class="k">одобрено</span><span class="pos">${sc.approved??0}</span></div>
    <div class="row"><span class="k">отклонено</span><span class="neg">${sc.rejected??0}</span></div>
    ${hrHtml}`;
