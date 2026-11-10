@@ -85,7 +85,7 @@ class Settings(BaseSettings):
         default=30.0, ge=0, description="Минимальная ликвидность AMM-пула, SOL."
     )
     min_real_pool_sol: float = Field(
-        default=60.0, ge=0,
+        default=40.0, ge=0,
         description=(
             "Минимальные РЕАЛЬНЫЕ резервы bonding curve, SOL "
             "(виртуальный резерв = реальные + 30 SOL, порог по виртуальным фиктивен)."
@@ -192,7 +192,7 @@ class Settings(BaseSettings):
         ),
     )
     max_entry_price_gain_pct: float = Field(
-        default=30.0, gt=0,
+        default=50.0, gt=0,
         description=(
             "Максимальный рост цены за окно входа, %: выше — «погоня за "
             "хвостом волны», вход запрещён."
@@ -202,6 +202,30 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ Выход
     tp1_pct: float = Field(default=30.0, gt=0, description="Первый тейк-профит, %.")
     tp2_pct: float = Field(default=50.0, gt=0, description="Второй тейк-профит, %.")
+    hot_volume_sol: float = Field(
+        default=300.0, gt=0,
+        description=(
+            "Объём торгов по пулу с момента отслеживания, SOL, при котором "
+            "позиция считается «горячей»: расширенные тейки/холд/трейлинг."
+        ),
+    )
+    tp1_hot_pct: float = Field(
+        default=40.0, gt=0, description="Первый тейк-профит для «горячих» пулов, %."
+    )
+    tp2_hot_pct: float = Field(
+        default=70.0, gt=0, description="Второй тейк-профит для «горячих» пулов, %."
+    )
+    max_hold_hot_seconds: float = Field(
+        default=600.0, gt=0,
+        description="Максимальное удержание «горячей» позиции, c.",
+    )
+    trailing_activation_hot_pct: float = Field(
+        default=25.0, ge=0,
+        description=(
+            "Минимальная прибыль до пика, %, для активации трейлинга "
+            "на «горячих» пулах."
+        ),
+    )
     tp1_size_pct: float = Field(
         default=50.0, gt=0, le=100, description="Доля позиции для TP1, %."
     )

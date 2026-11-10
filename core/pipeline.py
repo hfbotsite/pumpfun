@@ -1084,7 +1084,20 @@ class LivePipeline:
         """
         now = time.time()
         for position in trader.portfolio.all_positions():
-            if now - position.opened_at <= settings.max_hold_seconds:
+            # «Горячие» пулы (объём >= порога) живут дольше: их холд ×N.
+            tracked = (
+                self._listener.registry.get(position.pool_address)
+                if self._listener is not None
+                else None
+            )
+            hot = (
+                tracked is not None
+                and tracked.volume_sol >= settings.hot_volume_sol
+            )
+            max_hold = (
+                settings.max_hold_hot_seconds if hot else settings.max_hold_seconds
+            )
+            if now - position.opened_at <= max_hold:
                 continue
             mint = position.base_mint
             age = now - position.opened_at

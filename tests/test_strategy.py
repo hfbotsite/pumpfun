@@ -352,3 +352,67 @@ class TestTrailingActivation:
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
         assert signal is not None
         assert signal.exit_reason.value == "trailing_stop"
+
+
+class TestHotPool:
+    """«Горячий» режим: объём >= порога расширяет тейки/холд/трейлинг."""
+
+    def hot_context(self, metrics: MomentumMetrics, timestamp: float = 1001.0):
+        """Контекст выхода с «горячим» пулом (объём 500 SOL).
+
+        Args:
+            metrics: Метрики окна выхода.
+            timestamp: Unix ts события.
+
+        Returns:
+            :class:`FilterContext`.
+        """
+        return FilterContext(
+            pool=make_pool(volume_sol=500.0),
+            trade_amount_sol=0.5,
+            security=None,
+            metrics=metrics,
+            timestamp=timestamp,
+        )
+
+    def test_hot_tp1_raises_target(self) -> None:
+        """Горячий пул: PnL +35% — между обычным TP1 (30) и горячим (40) — удерживаем."""
+        strategy = MomentumPumpStrategy()
+        position = make_position(entry_price=1.0)
+        metrics = hot_metrics(last_price=1.35)
+        # Обычный пул: TP1 на 30% срабатывает.
+        assert strategy.evaluate_exit(position, make_exit_context(metrics)) is not None
+        # Горячий: цель 40% — удерживаем.
+        assert strategy.evaluate_exit(position, self.hot_context(metrics)) is None
+
+    def test_hot_tp2_at_70(self) -> None:
+        """Горячий пул: после TP1 второй тейк на 70%."""
+        strategy = MomentumPumpStrategy()
+        position = make_position(entry_price=1.0)
+        position.tp1_taken = True
+        metrics = hot_metrics(last_price=1.72)
+        signal = strategy.evaluate_exit(position, self.hot_context(metrics))
+        assert signal is not None
+        assert signal.exit_reason.value == "take_profit_2"
+
+    def test_hot_trailing_activation_higher(self) -> None:
+        """Горячий пул: пик +20% (>= обычной активации 15, < горячей 25) — трейлинг молчит."""
+        strategy = MomentumPumpStrategy()
+        position = make_position(entry_price=1.0, peak_price=1.20)
+        metrics = hot_metrics(last_price=0.94)  # откат 21.7% от пика
+        # Обычный пул: трейлинг сработал бы.
+        assert strategy.evaluate_exit(position, make_exit_context(metrics)) is not None
+        # Горячий: активация 25% — удерживаем (PnL -6% < hard SL -30%).
+        assert strategy.evaluate_exit(position, self.hot_context(metrics)) is None
+
+    def test_hot_max_hold_longer(self) -> None:
+        """Горячий пул: холд 200 c — обычный таймаут (180) вышел бы, горячий (600) нет."""
+        strategy = MomentumPumpStrategy()
+        position = make_position(entry_price=1.0)
+        metrics = hot_metrics(last_price=1.0)
+        late = make_exit_context(metrics, timestamp=1200.0)  # возраст 200 c
+        signal = strategy.evaluate_exit(position, late)
+        assert signal is not None
+        assert signal.exit_reason.value == "max_hold_timeout"
+        hot_late = self.hot_context(metrics, timestamp=1200.0)
+        assert strategy.evaluate_exit(position, hot_late) is None

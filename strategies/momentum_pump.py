@@ -69,6 +69,11 @@ class MomentumPumpStrategy(BaseStrategy):
         max_entry_price_gain_pct: float | None = None,
         tp1_pct: float | None = None,
         tp2_pct: float | None = None,
+        hot_volume_sol: float | None = None,
+        tp1_hot_pct: float | None = None,
+        tp2_hot_pct: float | None = None,
+        max_hold_hot_seconds: float | None = None,
+        trailing_activation_hot_pct: float | None = None,
         tp1_size_pct: float | None = None,
         trailing_stop_pct: float | None = None,
         trailing_activation_pct: float | None = None,
@@ -90,6 +95,13 @@ class MomentumPumpStrategy(BaseStrategy):
                 (защита от погони за хвостом волны).
             tp1_pct: Первый тейк-профит, %.
             tp2_pct: Второй тейк-профит, %.
+            hot_volume_sol: Объём торгов по пулу, SOL, при котором позиция
+                считается «горячей» (расширенные тейки/холд/трейлинг).
+            tp1_hot_pct: Первый тейк-профит «горячих» пулов, %.
+            tp2_hot_pct: Второй тейк-профит «горячих» пулов, %.
+            max_hold_hot_seconds: Максимальное удержание «горячей» позиции, c.
+            trailing_activation_hot_pct: Активация трейлинга на «горячих»
+                пулах, % прибыли до пика.
             tp1_size_pct: Доля позиции, фиксируемая на TP1, %.
             trailing_stop_pct: Откат от пика для трейлинг-стопа, %.
             trailing_activation_pct: Прибыль от входа до пика, %, после
@@ -126,6 +138,25 @@ class MomentumPumpStrategy(BaseStrategy):
         )
         self._tp1_pct = settings.tp1_pct if tp1_pct is None else tp1_pct
         self._tp2_pct = settings.tp2_pct if tp2_pct is None else tp2_pct
+        self._hot_volume_sol = (
+            settings.hot_volume_sol if hot_volume_sol is None else hot_volume_sol
+        )
+        self._tp1_hot_pct = (
+            settings.tp1_hot_pct if tp1_hot_pct is None else tp1_hot_pct
+        )
+        self._tp2_hot_pct = (
+            settings.tp2_hot_pct if tp2_hot_pct is None else tp2_hot_pct
+        )
+        self._max_hold_hot_seconds = (
+            settings.max_hold_hot_seconds
+            if max_hold_hot_seconds is None
+            else max_hold_hot_seconds
+        )
+        self._trailing_activation_hot_pct = (
+            settings.trailing_activation_hot_pct
+            if trailing_activation_hot_pct is None
+            else trailing_activation_hot_pct
+        )
         self._tp1_size_pct = (
             settings.tp1_size_pct if tp1_size_pct is None else tp1_size_pct
         )
@@ -315,27 +346,53 @@ class MomentumPumpStrategy(BaseStrategy):
             Сигнал выхода при достижении цели, иначе ``None``.
         """
         pnl_pct = position.unrealized_pnl_pct(current_price)
+        tp1, tp2 = self._tp_targets(context)
 
         if position.tp1_taken:
-            if pnl_pct >= self._tp2_pct:
+            if pnl_pct >= tp2:
                 return self._exit_signal(
                     position,
                     context,
                     ExitReason.TAKE_PROFIT_2,
                     1.0,
-                    f"второй тейк-профит: PnL={pnl_pct:.2f}% >= {self._tp2_pct:.1f}%",
+                    f"второй тейк-профит: PnL={pnl_pct:.2f}% >= {tp2:.1f}%",
                 )
             return None
 
-        if pnl_pct >= self._tp1_pct:
+        if pnl_pct >= tp1:
             return self._exit_signal(
                 position,
                 context,
                 ExitReason.TAKE_PROFIT_1,
                 self._tp1_size_fraction,
-                f"первый тейк-профит: PnL={pnl_pct:.2f}% >= {self._tp1_pct:.1f}%",
+                f"первый тейк-профит: PnL={pnl_pct:.2f}% >= {tp1:.1f}%",
             )
         return None
+
+    def _is_hot_pool(self, pool: object) -> bool:
+        """«Горячий» пул: объём торгов с отслеживания >= порога.
+
+        Args:
+            pool: Снимок пула (или ``None``).
+
+        Returns:
+            ``True``, если объём достаточен для расширенных целей.
+        """
+        volume = getattr(pool, "volume_sol", 0.0)
+        return volume >= self._hot_volume_sol
+
+    def _tp_targets(self, context: FilterContext) -> tuple[float, float]:
+        """Целевые уровни TP1/TP2 с учётом «горячести» пула.
+
+        Args:
+            context: Контекст актива.
+
+        Returns:
+            Пара ``(tp1_pct, tp2_pct)``.
+        """
+        if self._is_hot_pool(context.pool):
+            return self._tp1_hot_pct, self._tp2_hot_pct
+        return self._tp1_pct, self._tp2_pct
 
     def _check_trailing_stop(
         self, position: Position, current_price: float, context: FilterContext
@@ -358,8 +415,14 @@ class MomentumPumpStrategy(BaseStrategy):
             return None
         # Порог активации: трейлинг включается только с прибыли — иначе
         # он дублирует жёсткий стоп и выходит «из шума» с малым минусом.
+        # На «горячих» пулах порог выше: прибыли даём течь.
+        activation = (
+            self._trailing_activation_hot_pct
+            if self._is_hot_pool(context.pool)
+            else self._trailing_activation_pct
+        )
         peak_gain_pct = (position.peak_price / position.entry_price - 1.0) * 100.0
-        if peak_gain_pct < self._trailing_activation_pct:
+        if peak_gain_pct < activation:
             return None
         drawdown = position.drawdown_from_peak_pct(current_price)
         if drawdown >= self._trailing_stop_pct:
@@ -435,13 +498,15 @@ class MomentumPumpStrategy(BaseStrategy):
             Сигнал выхода при истечении времени, иначе ``None``.
         """
         held_seconds = context.timestamp - position.opened_at
-        if held_seconds >= self._max_hold_seconds:
+        hot = self._is_hot_pool(context.pool)
+        max_hold = self._max_hold_hot_seconds if hot else self._max_hold_seconds
+        if held_seconds >= max_hold:
             return self._exit_signal(
                 position,
                 context,
                 ExitReason.MAX_HOLD_TIMEOUT,
                 1.0,
-                f"таймаут удержания: {held_seconds:.2f}c >= {self._max_hold_seconds:.1f}c",
+                f"таймаут удержания: {held_seconds:.2f}c >= {max_hold:.1f}c",
             )
         return None
 
