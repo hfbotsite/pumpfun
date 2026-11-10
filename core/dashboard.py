@@ -198,10 +198,41 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
         <label>окно входа, c:</label>
         <input id="bt_entryw" type="number" value="5" style="width:60px">
         <label>окно выхода, c:</label>
-        <input id="bt_exitw" type="number" value="2" style="width:60px">
+        <input id="bt_exitw" type="number" value="5" style="width:60px">
         <label>макс. позиций:</label>
         <input id="bt_maxpos" type="number" value="1" style="width:50px">
+      </div>
+      <div class="btrow">
+        <label>TP1 %:</label><input id="bt_tp1" type="number" value="30" style="width:55px">
+        <label>TP2 %:</label><input id="bt_tp2" type="number" value="50" style="width:55px">
+        <label>трейлинг %:</label><input id="bt_trail" type="number" value="20" style="width:55px">
+        <label>активация трейл. %:</label><input id="bt_trailact" type="number" value="15" style="width:55px">
+        <label>стоп %:</label><input id="bt_stoploss" type="number" value="30" style="width:55px">
+        <label>холд, c:</label><input id="bt_hold" type="number" value="180" style="width:60px">
+      </div>
+      <div class="btrow">
+        <label>ratio входа:</label><input id="bt_ratio" type="number" value="0.70" step="0.05" style="width:60px">
+        <label>velocity SOL:</label><input id="bt_velocity" type="number" value="1.2" step="0.1" style="width:60px">
+        <label>мин. покупок:</label><input id="bt_minbuys" type="number" value="3" style="width:50px">
+        <label>погоня %:</label><input id="bt_chase" type="number" value="40" style="width:55px">
+        <label>затухание ratio:</label><input id="bt_exratio" type="number" value="0.25" step="0.05" style="width:60px">
+        <label>grace, c:</label><input id="bt_grace" type="number" value="10" style="width:50px">
+        <label>крупная продажа SOL:</label><input id="bt_largesell" type="number" value="3" style="width:55px">
+      </div>
+      <div class="btrow">
+        <label>горячий объём SOL:</label><input id="bt_hotvol" type="number" value="300" style="width:60px">
+        <label>горяч. TP1 %:</label><input id="bt_hottp1" type="number" value="40" style="width:55px">
+        <label>горяч. TP2 %:</label><input id="bt_hottp2" type="number" value="70" style="width:55px">
+        <label>горяч. холд, c:</label><input id="bt_hothold" type="number" value="600" style="width:60px">
+        <label>горяч. активация %:</label><input id="bt_hotact" type="number" value="25" style="width:55px">
+        <label>входов на mint:</label><input id="bt_entries" type="number" value="4" style="width:50px">
+        <label>окно надёжности, c:</label><input id="bt_reliable" type="number" value="3" style="width:50px">
         <span class="spacer"></span>
+        <span id="bt_status" style="color:var(--dim);font-size:12px"></span>
+        <button class="btn mini" id="bt_sample" title="Заполнить форму демонстрационным CSV">демо-CSV</button>
+        <button class="btn bt-run" id="bt_run">ЗАПУСТИТЬ</button>
+        <button class="btn bt-stop" id="bt_stop" disabled title="Остановить прогон и показать статистику по пройденной части">ОСТАНОВИТЬ</button>
+      </div>
         <span id="bt_status" style="color:var(--dim);font-size:12px"></span>
         <button class="btn mini" id="bt_sample" title="Заполнить форму демонстрационным CSV">демо-CSV</button>
         <button class="btn bt-run" id="bt_run">ЗАПУСТИТЬ</button>
@@ -491,8 +522,28 @@ $('bt_sample').onclick=async()=>{try{
 function btCollect(){const p={mode:btMode,
  trade_amount_sol:+$('bt_amount').value||0.5,
  entry_window_seconds:+$('bt_entryw').value||5,
- exit_window_seconds:+$('bt_exitw').value||2,
- max_positions:+$('bt_maxpos').value||1};
+ exit_window_seconds:+$('bt_exitw').value||5,
+ max_positions:+$('bt_maxpos').value||1,
+ buy_sell_ratio_threshold:+$('bt_ratio').value||0.7,
+ volume_velocity_threshold:+$('bt_velocity').value||1.2,
+ min_entry_buy_count:+$('bt_minbuys').value||3,
+ max_entry_price_gain_pct:+$('bt_chase').value||40,
+ tp1_pct:+$('bt_tp1').value||30,
+ tp2_pct:+$('bt_tp2').value||50,
+ trailing_stop_pct:+$('bt_trail').value||20,
+ trailing_activation_pct:+$('bt_trailact').value||15,
+ hard_stop_loss_pct:+$('bt_stoploss').value||30,
+ max_hold_seconds:+$('bt_hold').value||180,
+ exit_ratio_threshold:+$('bt_exratio').value||0.25,
+ exhaustion_grace_seconds:+$('bt_grace').value||10,
+ large_sell_sol:+$('bt_largesell').value||3,
+ hot_volume_sol:+$('bt_hotvol').value||300,
+ tp1_hot_pct:+$('bt_hottp1').value||40,
+ tp2_hot_pct:+$('bt_hottp2').value||70,
+ max_hold_hot_seconds:+$('bt_hothold').value||600,
+ trailing_activation_hot_pct:+$('bt_hotact').value||25,
+ max_entries_per_mint:+$('bt_entries').value||4,
+ token_reliable_seconds:+$('bt_reliable').value||0};
  if(btMode==='mint'){p.url=$('bt_url').value.trim();p.max_tx=+$('bt_maxtx').value||500}
  else{p.csv=$('bt_csv').value;p.initial_sol=+$('bt_initsol').value||90;
   p.initial_token=+$('bt_inittoken').value||600000000}

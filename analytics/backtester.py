@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Any
 
 from analytics.replay import ReplayPoolState, ReplayScenario
 from config.settings import settings
@@ -31,6 +32,7 @@ from core.portfolio import ClosedTrade, PortfolioManager, PortfolioStats
 from core.trader import MomentumTrader
 from models.trade_data import PoolInfo, TokenSecurity
 from strategies.base_strategy import BaseStrategy
+from strategies.momentum_pump import MomentumPumpStrategy
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -270,6 +272,8 @@ class Backtester:
         retry_cooldown_seconds: float = 0.0,
         initial_capital_sol: float | None = None,
         cancel_event: asyncio.Event | None = None,
+        strategy_kwargs: dict[str, Any] | None = None,
+        trader_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Инициализирует бэктестер.
 
@@ -289,6 +293,10 @@ class Backtester:
                 умолчанию ``trade_amount_sol * max_concurrent_positions``).
             cancel_event: Событие кооперативной остановки: при установке
                 цикл завершается и отчёт строится по пройденной части.
+            strategy_kwargs: Переопределения порогов стратегии (тейки,
+                трейлинг, стоп, velocity и пр.) поверх настроек окружения.
+            trader_kwargs: Переопределения движка (``max_entries_per_mint``,
+                ``token_reliable_seconds``) поверх настроек окружения.
         """
         self._strategy = strategy
         self._executor: TraderExecutor = (
@@ -318,6 +326,8 @@ class Backtester:
         )
         self._cancel_event = cancel_event
         self._was_cancelled = False
+        self._strategy_kwargs = dict(strategy_kwargs or {})
+        self._trader_kwargs = dict(trader_kwargs or {})
 
     # --------------------------------------------------------------- Свойства
     @property
@@ -386,14 +396,18 @@ class Backtester:
         async def provider(_pool: PoolInfo) -> TokenSecurity | None:
             return security
 
+        strategy = self._strategy
+        if strategy is None and self._strategy_kwargs:
+            strategy = MomentumPumpStrategy(**self._strategy_kwargs)
         return MomentumTrader(
             executor=self._executor,
             portfolio=PortfolioManager(),
-            strategy=self._strategy,
+            strategy=strategy,
             security_provider=provider,
             trade_amount_sol=self._trade_amount_sol,
             entry_window_seconds=self._entry_window_seconds,
             exit_window_seconds=self._exit_window_seconds,
             retry_cooldown_seconds=self._retry_cooldown_seconds,
             capital_sol=self._initial_capital_sol,
+            **self._trader_kwargs,
         )

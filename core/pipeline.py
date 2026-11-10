@@ -1252,6 +1252,8 @@ class LivePipeline:
         exit_window: float,
         max_positions: int,
         cancel_event: asyncio.Event | None = None,
+        strategy_kwargs: dict[str, Any] | None = None,
+        trader_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, object]:
         """Прогоняет события через живую стратегию и возвращает отчёт.
 
@@ -1264,6 +1266,8 @@ class LivePipeline:
             entry_window: Окно входа, c.
             exit_window: Окно выхода, c.
             max_positions: Максимум одновременных позиций.
+            strategy_kwargs: Переопределения порогов стратегии.
+            trader_kwargs: Переопределения движка (входов на mint и пр.).
 
         Returns:
             Отчёт :meth:`BacktestReport.to_dict`.
@@ -1291,6 +1295,8 @@ class LivePipeline:
             entry_window_seconds=entry_window,
             exit_window_seconds=exit_window,
             cancel_event=cancel_event,
+            strategy_kwargs=strategy_kwargs,
+            trader_kwargs=trader_kwargs,
         )
         report = await backtester.run(scenario)
         report_dict = report.to_dict()
@@ -1333,6 +1339,74 @@ class LivePipeline:
             logger.exception("Ошибка бэктеста")
             return {"ok": False, "error": f"внутренняя ошибка бэктеста: {exc}"}
 
+    #: Поля payload бэктеста, передаваемые в стратегию (float, кроме отмеченного).
+    _BACKTEST_STRATEGY_FIELDS: tuple[str, ...] = (
+        "buy_sell_ratio_threshold",
+        "volume_velocity_threshold",
+        "min_entry_buy_count",
+        "max_entry_price_gain_pct",
+        "tp1_pct",
+        "tp2_pct",
+        "trailing_stop_pct",
+        "trailing_activation_pct",
+        "hard_stop_loss_pct",
+        "exit_ratio_threshold",
+        "exhaustion_grace_seconds",
+        "large_sell_sol",
+        "max_hold_seconds",
+        "hot_volume_sol",
+        "tp1_hot_pct",
+        "tp2_hot_pct",
+        "max_hold_hot_seconds",
+        "trailing_activation_hot_pct",
+    )
+
+    def _backtest_strategy_kwargs(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Собирает переопределения стратегии из payload бэктеста.
+
+        Args:
+            payload: Параметры запроса бэктеста.
+
+        Returns:
+            Словарь только с указанными числовыми полями.
+
+        Raises:
+            ValueError: Если поле не парсится как число.
+        """
+        kwargs: dict[str, Any] = {}
+        for name in self._BACKTEST_STRATEGY_FIELDS:
+            raw = payload.get(name)
+            if raw is None:
+                continue
+            value = float(raw)  # может бросить ValueError вызывающему
+            kwargs[name] = int(value) if name == "min_entry_buy_count" else value
+        return kwargs
+
+    @staticmethod
+    def _backtest_trader_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
+        """Собирает переопределения движка из payload бэктеста.
+
+        Args:
+            payload: Параметры запроса бэктеста.
+
+        Returns:
+            Словарь только с указанными полями.
+
+        Raises:
+            ValueError: Если поле не парсится как число.
+        """
+        kwargs: dict[str, Any] = {}
+        for name in ("max_entries_per_mint", "token_reliable_seconds"):
+            raw = payload.get(name)
+            if raw is None:
+                continue
+            kwargs[name] = (
+                int(raw) if name == "max_entries_per_mint" else float(raw)
+            )
+        return kwargs
+
     async def _dashboard_backtest_inner(
         self, payload: dict[str, Any]
     ) -> dict[str, Any]:
@@ -1361,6 +1435,12 @@ class LivePipeline:
             max_positions = int(payload.get("max_positions", 1))
         except (TypeError, ValueError):
             return {"ok": False, "error": "числовые параметры заданы неверно"}
+
+        try:
+            strategy_kwargs = self._backtest_strategy_kwargs(payload)
+            trader_kwargs = self._backtest_trader_kwargs(payload)
+        except (TypeError, ValueError) as exc:
+            return {"ok": False, "error": f"параметры бэктеста неверны: {exc}"}
 
         if mode == "sample":
             return {"ok": True, "csv": self._backtest_sample_csv()}
@@ -1396,6 +1476,8 @@ class LivePipeline:
                 exit_window=exit_window,
                 max_positions=max_positions,
                 cancel_event=self._backtest_stop,
+                strategy_kwargs=strategy_kwargs,
+                trader_kwargs=trader_kwargs,
             )
 
         if mode == "mint":
@@ -1417,6 +1499,8 @@ class LivePipeline:
         entry_window: float,
         exit_window: float,
         max_positions: int,
+        strategy_kwargs: dict[str, Any] | None = None,
+        trader_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, object]:
         """Бэктест по ссылке на монету: история кривой через Helius.
 
@@ -1426,6 +1510,8 @@ class LivePipeline:
             entry_window: Окно входа, c.
             exit_window: Окно выхода, c.
             max_positions: Максимум одновременных позиций.
+            strategy_kwargs: Переопределения порогов стратегии.
+            trader_kwargs: Переопределения движка.
 
         Returns:
             ``{ok, report}`` или ``{ok, error}``.
