@@ -222,8 +222,8 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------ Выход
-    tp1_pct: float = Field(default=30.0, gt=0, description="Первый тейк-профит, %.")
-    tp2_pct: float = Field(default=50.0, gt=0, description="Второй тейк-профит, %.")
+    tp1_pct: float = Field(default=25.0, gt=0, description="Первый тейк-профит, %.")
+    tp2_pct: float = Field(default=40.0, gt=0, description="Второй тейк-профит, %.")
     hot_volume_sol: float = Field(
         default=300.0, gt=0,
         description=(
@@ -252,10 +252,10 @@ class Settings(BaseSettings):
         default=50.0, gt=0, le=100, description="Доля позиции для TP1, %."
     )
     trailing_stop_pct: float = Field(
-        default=20.0, gt=0, le=100, description="Откат от пика для трейлинг-стопа, %."
+        default=15.0, gt=0, le=100, description="Откат от пика для трейлинг-стопа, %."
     )
     trailing_activation_pct: float = Field(
-        default=15.0, ge=0,
+        default=12.0, ge=0,
         description=(
             "Минимальная прибыль от входа до пика, %, после которой "
             "трейлинг-стоп включается (из убытка не срабатывает)."
