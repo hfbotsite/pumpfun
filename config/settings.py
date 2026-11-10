@@ -240,7 +240,19 @@ class Settings(BaseSettings):
         ),
     )
     hard_stop_loss_pct: float = Field(
-        default=30.0, gt=0, le=100, description="Жёсткий стоп-лосс, % от входа."
+        default=30.0, gt=0, le=100, description="Жёсткий стоп-лосс (базовый), % от входа."
+    )
+    hard_stop_hot_pct: float = Field(
+        default=40.0, gt=0, le=100,
+        description="Жёсткий стоп-лосс «горячих» пулов (объём >= hot_volume_sol), %.",
+    )
+    cold_volume_sol: float = Field(
+        default=100.0, ge=0,
+        description="Объём торгов пула, ниже которого позиция классифицируется «холодной», SOL.",
+    )
+    hard_stop_cold_pct: float = Field(
+        default=22.0, gt=0, le=100,
+        description="Жёсткий стоп-лосс «холодных» пулов (объём < cold_volume_sol), %.",
     )
     exit_window_seconds: float = Field(
         default=5.0, gt=0, description="Окно детекта затухания импульса, c."

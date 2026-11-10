@@ -426,6 +426,7 @@ class MomentumTrader:
             token_amount=result.token_amount,
             signature=result.signature,
             opened_at=event.timestamp,
+            stop_loss_pct=self._stop_pct_for_pool(pool),
         )
         return TradeDecision(
             action=SignalAction.ENTER,
@@ -433,6 +434,24 @@ class MomentumTrader:
             signal=signal,
             order=result,
         )
+
+    def _stop_pct_for_pool(self, pool: PoolInfo) -> float:
+        """Тировый стоп-лосс по объёму пула в момент входа.
+
+        Класс позиции фиксируется при открытии: усреднения и рост объёма
+        позднее не переклассифицируют позицию.
+
+        Args:
+            pool: Снимок пула (объём торгов с отслеживания).
+
+        Returns:
+            Стоп-лосс в процентах от входа.
+        """
+        if pool.volume_sol >= settings.hot_volume_sol:
+            return settings.hard_stop_hot_pct
+        if pool.volume_sol < settings.cold_volume_sol:
+            return settings.hard_stop_cold_pct
+        return settings.hard_stop_loss_pct
 
     async def _handle_average(
         self,

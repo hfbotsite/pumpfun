@@ -427,6 +427,13 @@ class Position(BaseModel):
     tp1_taken: bool = Field(default=False, description="Взят ли первый тейк-профит.")
     realized_sol: float = Field(default=0.0, description="Уже реализованный объём, SOL.")
     signature: str | None = Field(default=None, description="Подпись входа.")
+    stop_loss_pct: float = Field(
+        default=0.0, ge=0,
+        description=(
+            "Жёсткий стоп-лосс позиции, % (фиксируется на входе по классу "
+            "объёма пула; 0 = базовый из настроек)."
+        ),
+    )
     entries_count: int = Field(
         default=1, ge=1,
         description="Число входов в позицию (вход + усреднения).",

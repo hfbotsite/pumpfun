@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from core.persistence import PortfolioStore
 from core.pipeline import LivePipeline
 from core.portfolio import PortfolioManager
 from core.trader import MomentumTrader
@@ -316,3 +317,33 @@ class TestSweepStale:
         await pipeline._sweep_stale_positions(trader)
         assert trader.portfolio.open_count == 1
         assert not executor.sell_calls
+
+
+class TestTieredStopLoss:
+    """Стоп-лосс тирируется по объёму пула и фиксируется на входе."""
+
+    def test_stop_pct_by_pool_volume(self) -> None:
+        """hot (>=300) → 40, cold (<100) → 22, средний → базовый 30."""
+        trader = make_fresh_trader(ManualExecutor())
+        assert trader._stop_pct_for_pool(make_pool(volume_sol=500.0)) == 40.0
+        assert trader._stop_pct_for_pool(make_pool(volume_sol=50.0)) == 22.0
+        assert trader._stop_pct_for_pool(make_pool(volume_sol=200.0)) == 30.0
+
+    async def test_entry_persists_stop_pct(self, tmp_path) -> None:
+        """Открытая позиция несёт свой стоп и переживает write-through."""
+        store = PortfolioStore(tmp_path / "db.sqlite")
+        trader = MomentumTrader(
+            executor=ManualExecutor(),
+            portfolio=PortfolioManager(store=store),
+            strategy=MomentumPumpStrategy(min_entry_buy_count=1),
+            security_provider=clean_provider,
+            trade_amount_sol=0.5,
+        )
+        pool = make_pool(volume_sol=500.0, created_at=900.0)
+        await trader.process_event(hot_event(timestamp=1000.0), pool)
+        position = trader.portfolio.get(BASE_MINT)
+        assert position is not None
+        assert position.stop_loss_pct == 40.0
+        loaded = store.load_open_positions()
+        assert loaded and loaded[0].stop_loss_pct == 40.0
+        store.close()

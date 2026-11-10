@@ -572,6 +572,7 @@ class LivePipeline:
                         "peak_price": pos.peak_price,
                         "hold_seconds": max(0.0, now - pos.opened_at),
                         "tp1_taken": pos.tp1_taken,
+                        "stop_loss_pct": pos.stop_loss_pct,
                     }
                 )
 

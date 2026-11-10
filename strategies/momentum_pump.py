@@ -322,13 +322,20 @@ class MomentumPumpStrategy(BaseStrategy):
             Сигнал выхода при пробое стопа, иначе ``None``.
         """
         pnl_pct = position.unrealized_pnl_pct(current_price)
-        if pnl_pct <= -self._hard_stop_loss_pct:
+        # Стоп фиксируется на входе по классу объёма пула (hot/normal/cold);
+        # 0 = базовый порог из настроек (совместимость с бэктестом/реплеем).
+        stop_pct = (
+            position.stop_loss_pct
+            if position.stop_loss_pct > 0
+            else self._hard_stop_loss_pct
+        )
+        if pnl_pct <= -stop_pct:
             return self._exit_signal(
                 position,
                 context,
                 ExitReason.HARD_STOP_LOSS,
                 1.0,
-                f"жёсткий стоп-лосс: PnL={pnl_pct:.2f}%",
+                f"жёсткий стоп-лосс: PnL={pnl_pct:.2f}% (стоп {stop_pct:.0f}%)",
             )
         return None
 

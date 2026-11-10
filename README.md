@@ -204,7 +204,8 @@ cp .env.example .env   # заполните HELIUS_API_KEY и кошелёк
 | `MIN_POOL_SOL` | `30` | Минимальный резерв AMM-пула (PumpSwap), SOL |
 | `MIN_REAL_POOL_SOL` | `40` | Минимальные **реальные** резервы bonding curve, SOL (виртуальные = реальные + 30) |
 | `COMPUTE_UNIT_LIMIT` / `PRIORITY_FEE_MICRO_LAMPORTS` | `200000/1000000` | Compute Budget; 1M µL/CU ≈ 0.0002 SOL приоритетки на транзакцию |
-| `HARD_STOP_LOSS_PCT` | `30` | Жёсткий стоп-лосс, % от входа |
+| `HARD_STOP_LOSS_PCT` | `30` | Жёсткий стоп-лосс (базовый), % от входа |
+| `HARD_STOP_HOT_PCT` / `COLD_VOLUME_SOL` / `HARD_STOP_COLD_PCT` | `40/100/22` | Тировый стоп: горячим пулам (объём ≥ 300) — 40%, холодным (< 100) — 22%; класс фиксируется на входе и переживает усреднение/рестарт |
 | `TRAILING_STOP_PCT` / `TRAILING_ACTIVATION_PCT` | `20/15` | Трейлинг: откат от пика, % / прибыль от входа до пика, %, после которой трейлинг включается |
 | `EXIT_WINDOW_SECONDS` / `EXIT_RATIO_THRESHOLD` / `LARGE_SELL_SOL` | `5/0.25/3.0` | Детект затухания: окно, c / порог Buy/Sell Ratio / «крупная продажа», SOL |
 | `EXHAUSTION_GRACE_SECONDS` | `10` | Пауза после входа, c: затухание объёма не срабатывает (позиция не умирает на первой продаже) |

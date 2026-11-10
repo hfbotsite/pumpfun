@@ -416,3 +416,34 @@ class TestHotPool:
         assert signal.exit_reason.value == "max_hold_timeout"
         hot_late = self.hot_context(metrics, timestamp=1200.0)
         assert strategy.evaluate_exit(position, hot_late) is None
+
+
+class TestTieredHardStop:
+    """Стоп позиции перекрывает базовый порог стратегии."""
+
+    def test_cold_stop_exits_earlier(self) -> None:
+        """Стоп 22% (холодный): PnL -25% — выход раньше базовых 30%."""
+        strategy = MomentumPumpStrategy()
+        position = make_position(entry_price=1.0)
+        position.stop_loss_pct = 22.0
+        metrics = hot_metrics(last_price=0.75)
+        signal = strategy.evaluate_exit(position, make_exit_context(metrics))
+        assert signal is not None
+        assert signal.exit_reason.value == "hard_stop_loss"
+
+    def test_hot_stop_holds_longer(self) -> None:
+        """Стоп 40% (горячий): PnL -30% (базовый уровень) — удерживаем."""
+        strategy = MomentumPumpStrategy()
+        position = make_position(entry_price=1.0)
+        position.stop_loss_pct = 40.0
+        metrics = hot_metrics(last_price=0.70)
+        assert strategy.evaluate_exit(position, make_exit_context(metrics)) is None
+
+    def test_zero_stop_falls_back_to_base(self) -> None:
+        """stop_loss_pct=0 (бэктест/реплей) — базовый стоп 30%."""
+        strategy = MomentumPumpStrategy()
+        position = make_position(entry_price=1.0)
+        metrics = hot_metrics(last_price=0.70)
+        signal = strategy.evaluate_exit(position, make_exit_context(metrics))
+        assert signal is not None
+        assert signal.exit_reason.value == "hard_stop_loss"

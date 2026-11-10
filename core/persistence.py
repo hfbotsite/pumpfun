@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS positions (
     peak_price           REAL    NOT NULL,
     tp1_taken            INTEGER NOT NULL DEFAULT 0,
     realized_sol         REAL    NOT NULL DEFAULT 0.0,
-    signature            TEXT
+    signature            TEXT,
+    stop_loss_pct        REAL    NOT NULL DEFAULT 0.0
 );
 
 CREATE TABLE IF NOT EXISTS closed_trades (
@@ -94,8 +95,18 @@ class PortfolioStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate_schema()
         self._conn.commit()
         logger.info("Хранилище позиций открыто: {}", path)
+
+    def _migrate_schema(self) -> None:
+        """Миграции существующей БД: добавляет недостающие колонки."""
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(positions)")}
+        if "stop_loss_pct" not in columns:
+            self._conn.execute(
+                "ALTER TABLE positions ADD COLUMN stop_loss_pct REAL NOT NULL DEFAULT 0.0"
+            )
+            logger.info("Миграция БД: добавлена колонка positions.stop_loss_pct")
 
     # ------------------------------------------------------------------ Позиции
     def upsert_position(self, position: Position) -> None:
@@ -109,8 +120,8 @@ class PortfolioStore:
             INSERT INTO positions (
                 base_mint, pool_address, dex, entry_price, entry_sol,
                 token_amount, initial_token_amount, opened_at, peak_price,
-                tp1_taken, realized_sol, signature
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tp1_taken, realized_sol, signature, stop_loss_pct
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(base_mint) DO UPDATE SET
                 pool_address         = excluded.pool_address,
                 dex                  = excluded.dex,
@@ -122,7 +133,8 @@ class PortfolioStore:
                 peak_price           = excluded.peak_price,
                 tp1_taken            = excluded.tp1_taken,
                 realized_sol         = excluded.realized_sol,
-                signature            = excluded.signature
+                signature            = excluded.signature,
+                stop_loss_pct        = excluded.stop_loss_pct
             """,
             (
                 position.base_mint,
@@ -137,6 +149,7 @@ class PortfolioStore:
                 int(position.tp1_taken),
                 position.realized_sol,
                 position.signature,
+                position.stop_loss_pct,
             ),
         )
         self._conn.commit()
@@ -162,7 +175,7 @@ class PortfolioStore:
             """
             SELECT base_mint, pool_address, dex, entry_price, entry_sol,
                    token_amount, initial_token_amount, opened_at, peak_price,
-                   tp1_taken, realized_sol, signature
+                   tp1_taken, realized_sol, signature, stop_loss_pct
             FROM positions
             """
         )
@@ -183,6 +196,7 @@ class PortfolioStore:
                         tp1_taken=bool(row[9]),
                         realized_sol=float(row[10]),
                         signature=str(row[11]) if row[11] is not None else None,
+                        stop_loss_pct=float(row[12]),
                     )
                 )
             except Exception as exc:  # повреждённая строка не роняет старт

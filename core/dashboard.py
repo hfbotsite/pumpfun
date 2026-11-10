@@ -272,10 +272,10 @@ function render(d){
     <td>${price(p.entry_price)}</td><td>${price(p.current_price)}</td>
     <td class="${cls(p.pnl_pct)}">${sgn(p.pnl_pct,1)}%</td>
     <td>${price(p.peak_price)}</td><td>${dur(p.hold_seconds)}</td>
-    <td>${p.tp1_taken?'✔':'—'}</td>
+    <td>${p.tp1_taken?'✔':'—'}</td><td>${p.stop_loss_pct>0?p.stop_loss_pct+'%':'30%'}</td>
     <td><button class="btn mini" data-act="sell" data-mint="${esc(p.base_mint)}">✕ закрыть</button><button class="btn mini warn" data-act="average" data-mint="${esc(p.base_mint)}">＋ усреднить</button></td></tr>`).join('');
   $('positions').innerHTML=rows
-    ?`<table><tr><th>mint</th><th>стадия</th><th>ликв. SOL</th><th>объём SOL</th><th>вход</th><th>токены</th><th>вход цена</th><th>тек.</th><th>PnL</th><th>пик</th><th>холд</th><th>TP1</th><th>ручное</th></tr>${rows}</table>`
+    ?`<table><tr><th>mint</th><th>стадия</th><th>ликв. SOL</th><th>объём SOL</th><th>вход</th><th>токены</th><th>вход цена</th><th>тек.</th><th>PnL</th><th>пик</th><th>холд</th><th>TP1</th><th>стоп</th><th>ручное</th></tr>${rows}</table>`
     :'—';
 
   const fl=d.stream||{};

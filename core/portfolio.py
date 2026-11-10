@@ -262,6 +262,7 @@ class PortfolioManager:
         token_amount: float,
         signature: str | None = None,
         opened_at: float | None = None,
+        stop_loss_pct: float = 0.0,
     ) -> Position | None:
         """Открывает позицию.
 
@@ -274,6 +275,7 @@ class PortfolioManager:
             token_amount: Полученное количество токенов (человекочитаемое).
             signature: Подпись транзакции входа.
             opened_at: Время открытия, unix ts (по умолчанию — сейчас).
+            stop_loss_pct: Жёсткий стоп позиции, % (0 = базовый из настроек).
 
         Returns:
             Созданная :class:`~models.trade_data.Position` либо ``None``, если
@@ -304,6 +306,7 @@ class PortfolioManager:
             tp1_taken=False,
             realized_sol=0.0,
             signature=signature,
+            stop_loss_pct=stop_loss_pct,
             entries_count=1,
         )
         self._positions[base_mint] = position
