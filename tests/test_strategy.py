@@ -162,10 +162,10 @@ class TestExitTakeProfit:
         assert signal.sell_fraction == 1.0
 
     def test_tp1_level_after_tp1_taken_waits_tp2(self) -> None:
-        """После TP1 уровень +35% не является сигналом (ждём +50%)."""
+        """После TP1 уровень +12% не является сигналом (холодный TP2 = 15%)."""
         strategy = MomentumPumpStrategy()
         position = make_position(tp1_taken=True)
-        metrics = hot_metrics(last_price=position.entry_price * 1.35)
+        metrics = hot_metrics(last_price=position.entry_price * 1.12)
         assert strategy.evaluate_exit(position, make_exit_context(metrics)) is None
 
 
@@ -190,10 +190,10 @@ class TestExitTrailing:
         assert signal.exit_reason.value == "hard_stop_loss"
 
     def test_mild_pullback_holds(self) -> None:
-        """Откат ~4% от пика при PnL +10% — удерживаем."""
+        """Откат 6% от пика при PnL +8% — удерживаем (холодный уровень)."""
         strategy = MomentumPumpStrategy()
         position = make_position(entry_price=1.0, peak_price=1.15)
-        metrics = hot_metrics(last_price=1.10)  # откат 4.35%, PnL +10%
+        metrics = hot_metrics(last_price=1.08)  # откат 6.1%, PnL +8% < TP1 10%
         assert strategy.evaluate_exit(position, make_exit_context(metrics)) is None
 
 
@@ -338,10 +338,10 @@ class TestTrailingActivation:
     """Трейлинг включается только с прибыли >= 15% от входа."""
 
     def test_trailing_inactive_below_activation(self) -> None:
-        """Пик +8% от входа: откат 20% — но трейлинг ещё не активен."""
+        """Пик +4% от входа (< холодной активации 5%): трейлинг не активен."""
         strategy = MomentumPumpStrategy()
-        position = make_position(entry_price=1.0, peak_price=1.08)
-        metrics = hot_metrics(last_price=0.90)  # откат 16.7% от пика, PnL -10%
+        position = make_position(entry_price=1.0, peak_price=1.04)
+        metrics = hot_metrics(last_price=0.90)  # откат 13.5% от пика, PnL -10%
         assert strategy.evaluate_exit(position, make_exit_context(metrics)) is None
 
     def test_trailing_active_above_activation(self) -> None:
@@ -376,21 +376,27 @@ class TestHotPool:
         )
 
     def test_hot_tp1_raises_target(self) -> None:
-        """Горячий пул: PnL +35% — между обычным TP1 (30) и горячим (40) — удерживаем."""
+        """Горячий пул: TP1 = 20%; тёплый = 15%; холодный = 10%."""
         strategy = MomentumPumpStrategy()
         position = make_position(entry_price=1.0)
-        metrics = hot_metrics(last_price=1.35)
-        # Обычный пул: TP1 на 30% срабатывает.
+        metrics = hot_metrics(last_price=1.16)  # PnL +16%
+        # Холодный пул (объём 0): TP1 10% — выход.
         assert strategy.evaluate_exit(position, make_exit_context(metrics)) is not None
-        # Горячий: цель 40% — удерживаем.
+        # Тёплый (объём 200): TP1 15% — выход.
+        warm = FilterContext(
+            pool=make_pool(volume_sol=200.0), trade_amount_sol=0.5,
+            security=None, metrics=metrics, timestamp=1001.0,
+        )
+        assert strategy.evaluate_exit(position, warm) is not None
+        # Горячий (объём 500): цель 20% — удерживаем.
         assert strategy.evaluate_exit(position, self.hot_context(metrics)) is None
 
     def test_hot_tp2_at_70(self) -> None:
-        """Горячий пул: после TP1 второй тейк на 70%."""
+        """Горячий пул: после TP1 второй тейк на 40%."""
         strategy = MomentumPumpStrategy()
         position = make_position(entry_price=1.0)
         position.tp1_taken = True
-        metrics = hot_metrics(last_price=1.72)
+        metrics = hot_metrics(last_price=1.45)
         signal = strategy.evaluate_exit(position, self.hot_context(metrics))
         assert signal is not None
         assert signal.exit_reason.value == "take_profit_2"

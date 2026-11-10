@@ -71,10 +71,19 @@ class MomentumPumpStrategy(BaseStrategy):
         tp1_pct: float | None = None,
         tp2_pct: float | None = None,
         hot_volume_sol: float | None = None,
+        cold_volume_sol: float | None = None,
         tp1_hot_pct: float | None = None,
         tp2_hot_pct: float | None = None,
         max_hold_hot_seconds: float | None = None,
         trailing_activation_hot_pct: float | None = None,
+        tp1_cold_pct: float | None = None,
+        tp2_cold_pct: float | None = None,
+        trailing_stop_cold_pct: float | None = None,
+        trailing_activation_cold_pct: float | None = None,
+        tp1_warm_pct: float | None = None,
+        tp2_warm_pct: float | None = None,
+        trailing_stop_warm_pct: float | None = None,
+        trailing_activation_warm_pct: float | None = None,
         tp1_size_pct: float | None = None,
         trailing_stop_pct: float | None = None,
         trailing_activation_pct: float | None = None,
@@ -105,6 +114,10 @@ class MomentumPumpStrategy(BaseStrategy):
             max_hold_hot_seconds: Максимальное удержание «горячей» позиции, c.
             trailing_activation_hot_pct: Активация трейлинга на «горячих»
                 пулах, % прибыли до пика.
+            tp1_cold_pct/tp2_cold_pct/trailing_stop_cold_pct/
+                trailing_activation_cold_pct: цели «холодных» пулов.
+            tp1_warm_pct/tp2_warm_pct/trailing_stop_warm_pct/
+                trailing_activation_warm_pct: цели «тёплых» пулов.
             tp1_size_pct: Доля позиции, фиксируемая на TP1, %.
             trailing_stop_pct: Откат от пика для трейлинг-стопа, %.
             trailing_activation_pct: Прибыль от входа до пика, %, после
@@ -149,6 +162,9 @@ class MomentumPumpStrategy(BaseStrategy):
         self._hot_volume_sol = (
             settings.hot_volume_sol if hot_volume_sol is None else hot_volume_sol
         )
+        self._cold_volume_sol = (
+            settings.cold_volume_sol if cold_volume_sol is None else cold_volume_sol
+        )
         self._tp1_hot_pct = (
             settings.tp1_hot_pct if tp1_hot_pct is None else tp1_hot_pct
         )
@@ -164,6 +180,38 @@ class MomentumPumpStrategy(BaseStrategy):
             settings.trailing_activation_hot_pct
             if trailing_activation_hot_pct is None
             else trailing_activation_hot_pct
+        )
+        self._tp1_cold_pct = (
+            settings.tp1_cold_pct if tp1_cold_pct is None else tp1_cold_pct
+        )
+        self._tp2_cold_pct = (
+            settings.tp2_cold_pct if tp2_cold_pct is None else tp2_cold_pct
+        )
+        self._trailing_stop_cold_pct = (
+            settings.trailing_stop_cold_pct
+            if trailing_stop_cold_pct is None
+            else trailing_stop_cold_pct
+        )
+        self._trailing_activation_cold_pct = (
+            settings.trailing_activation_cold_pct
+            if trailing_activation_cold_pct is None
+            else trailing_activation_cold_pct
+        )
+        self._tp1_warm_pct = (
+            settings.tp1_warm_pct if tp1_warm_pct is None else tp1_warm_pct
+        )
+        self._tp2_warm_pct = (
+            settings.tp2_warm_pct if tp2_warm_pct is None else tp2_warm_pct
+        )
+        self._trailing_stop_warm_pct = (
+            settings.trailing_stop_warm_pct
+            if trailing_stop_warm_pct is None
+            else trailing_stop_warm_pct
+        )
+        self._trailing_activation_warm_pct = (
+            settings.trailing_activation_warm_pct
+            if trailing_activation_warm_pct is None
+            else trailing_activation_warm_pct
         )
         self._tp1_size_pct = (
             settings.tp1_size_pct if tp1_size_pct is None else tp1_size_pct
@@ -403,8 +451,24 @@ class MomentumPumpStrategy(BaseStrategy):
         volume = getattr(pool, "volume_sol", 0.0)
         return volume >= self._hot_volume_sol
 
+    def _pool_tier(self, pool: object) -> str:
+        """Уровень пула по объёму торгов: ``cold`` / ``warm`` / ``hot``.
+
+        Args:
+            pool: Снимок пула (или ``None``).
+
+        Returns:
+            Метка уровня для целей тейков и трейлинга.
+        """
+        volume = getattr(pool, "volume_sol", 0.0)
+        if volume >= self._hot_volume_sol:
+            return "hot"
+        if volume >= self._cold_volume_sol:
+            return "warm"
+        return "cold"
+
     def _tp_targets(self, context: FilterContext) -> tuple[float, float]:
-        """Целевые уровни TP1/TP2 с учётом «горячести» пула.
+        """Целевые уровни TP1/TP2 по уровню объёма пула.
 
         Args:
             context: Контекст актива.
@@ -412,9 +476,29 @@ class MomentumPumpStrategy(BaseStrategy):
         Returns:
             Пара ``(tp1_pct, tp2_pct)``.
         """
-        if self._is_hot_pool(context.pool):
+        tier = self._pool_tier(context.pool)
+        if tier == "hot":
             return self._tp1_hot_pct, self._tp2_hot_pct
-        return self._tp1_pct, self._tp2_pct
+        if tier == "warm":
+            return self._tp1_warm_pct, self._tp2_warm_pct
+        return self._tp1_cold_pct, self._tp2_cold_pct
+
+    def _trailing_params(self, context: FilterContext) -> tuple[float, float]:
+        """Параметры трейлинга по уровню объёма пула.
+
+        Args:
+            context: Контекст актива.
+
+        Returns:
+            Пара ``(откат_от_пика_%, активация_%)``.
+        """
+        tier = self._pool_tier(context.pool)
+        if tier == "hot":
+            # «Трейлинг не трогаем»: горячий стоп = базовый, активация своя.
+            return self._trailing_stop_pct, self._trailing_activation_hot_pct
+        if tier == "warm":
+            return self._trailing_stop_warm_pct, self._trailing_activation_warm_pct
+        return self._trailing_stop_cold_pct, self._trailing_activation_cold_pct
 
     def _check_trailing_stop(
         self, position: Position, current_price: float, context: FilterContext
@@ -437,24 +521,20 @@ class MomentumPumpStrategy(BaseStrategy):
             return None
         # Порог активации: трейлинг включается только с прибыли — иначе
         # он дублирует жёсткий стоп и выходит «из шума» с малым минусом.
-        # На «горячих» пулах порог выше: прибыли даём течь.
-        activation = (
-            self._trailing_activation_hot_pct
-            if self._is_hot_pool(context.pool)
-            else self._trailing_activation_pct
-        )
+        # Порог и откат зависят от уровня объёма пула (cold/warm/hot).
+        trailing_stop_pct, activation = self._trailing_params(context)
         peak_gain_pct = (position.peak_price / position.entry_price - 1.0) * 100.0
         if peak_gain_pct < activation:
             return None
         drawdown = position.drawdown_from_peak_pct(current_price)
-        if drawdown >= self._trailing_stop_pct:
+        if drawdown >= trailing_stop_pct:
             return self._exit_signal(
                 position,
                 context,
                 ExitReason.TRAILING_STOP,
                 1.0,
                 f"трейлинг-стоп: откат {drawdown:.2f}% от пика "
-                f"(>= {self._trailing_stop_pct:.1f}%)",
+                f"(>= {trailing_stop_pct:.1f}%)",
             )
         return None
 

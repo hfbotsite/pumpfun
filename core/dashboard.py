@@ -221,12 +221,18 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
       </div>
       <div class="btrow">
         <label>горячий объём SOL:</label><input id="bt_hotvol" type="number" value="300" style="width:60px">
-        <label>горяч. TP1 %:</label><input id="bt_hottp1" type="number" value="40" style="width:55px">
-        <label>горяч. TP2 %:</label><input id="bt_hottp2" type="number" value="70" style="width:55px">
+        <label>горяч. TP1 %:</label><input id="bt_hottp1" type="number" value="20" style="width:55px">
+        <label>горяч. TP2 %:</label><input id="bt_hottp2" type="number" value="40" style="width:55px">
         <label>горяч. холд, c:</label><input id="bt_hothold" type="number" value="600" style="width:60px">
         <label>горяч. активация %:</label><input id="bt_hotact" type="number" value="25" style="width:55px">
         <label>входов на mint:</label><input id="bt_entries" type="number" value="4" style="width:50px">
         <label>окно надёжности, c:</label><input id="bt_reliable" type="number" value="3" style="width:50px">
+      </div>
+      <div class="btrow">
+        <label>холод. TP1/TP2 %:</label><input id="bt_coldtp1" type="number" value="10" style="width:45px"><input id="bt_coldtp2" type="number" value="15" style="width:45px">
+        <label>холод. трейл/акт. %:</label><input id="bt_coldtrail" type="number" value="8" style="width:45px"><input id="bt_coldact" type="number" value="5" style="width:45px">
+        <label>тёпл. TP1/TP2 %:</label><input id="bt_warmtp1" type="number" value="15" style="width:45px"><input id="bt_warmtp2" type="number" value="30" style="width:45px">
+        <label>тёпл. трейл/акт. %:</label><input id="bt_warmtrail" type="number" value="10" style="width:45px"><input id="bt_warmact" type="number" value="7" style="width:45px">
         <span class="spacer"></span>
         <span id="bt_status" style="color:var(--dim);font-size:12px"></span>
         <button class="btn mini" id="bt_sample" title="Заполнить форму демонстрационным CSV">демо-CSV</button>
@@ -533,10 +539,18 @@ function btCollect(){const p={mode:btMode,
  exhaustion_grace_seconds:+$('bt_grace').value||10,
  large_sell_sol:+$('bt_largesell').value||3,
  hot_volume_sol:+$('bt_hotvol').value||300,
- tp1_hot_pct:+$('bt_hottp1').value||40,
- tp2_hot_pct:+$('bt_hottp2').value||70,
+ tp1_hot_pct:+$('bt_hottp1').value||20,
+ tp2_hot_pct:+$('bt_hottp2').value||40,
  max_hold_hot_seconds:+$('bt_hothold').value||600,
  trailing_activation_hot_pct:+$('bt_hotact').value||25,
+ tp1_cold_pct:+$('bt_coldtp1').value||10,
+ tp2_cold_pct:+$('bt_coldtp2').value||15,
+ trailing_stop_cold_pct:+$('bt_coldtrail').value||8,
+ trailing_activation_cold_pct:+$('bt_coldact').value||5,
+ tp1_warm_pct:+$('bt_warmtp1').value||15,
+ tp2_warm_pct:+$('bt_warmtp2').value||30,
+ trailing_stop_warm_pct:+$('bt_warmtrail').value||10,
+ trailing_activation_warm_pct:+$('bt_warmact').value||7,
  max_entries_per_mint:+$('bt_entries').value||4,
  token_reliable_seconds:+$('bt_reliable').value||0};
  if(btMode==='mint'){p.url=$('bt_url').value.trim();p.max_tx=+$('bt_maxtx').value||500}

@@ -85,7 +85,7 @@ class Settings(BaseSettings):
         default=30.0, ge=0, description="Минимальная ликвидность AMM-пула, SOL."
     )
     min_real_pool_sol: float = Field(
-        default=40.0, ge=0,
+        default=30.0, ge=0,
         description=(
             "Минимальные РЕАЛЬНЫЕ резервы bonding curve, SOL "
             "(виртуальный резерв = реальные + 30 SOL, порог по виртуальным фиктивен)."
@@ -232,10 +232,10 @@ class Settings(BaseSettings):
         ),
     )
     tp1_hot_pct: float = Field(
-        default=40.0, gt=0, description="Первый тейк-профит для «горячих» пулов, %."
+        default=20.0, gt=0, description="Первый тейк-профит для «горячих» пулов, %."
     )
     tp2_hot_pct: float = Field(
-        default=70.0, gt=0, description="Второй тейк-профит для «горячих» пулов, %."
+        default=40.0, gt=0, description="Второй тейк-профит для «горячих» пулов, %."
     )
     max_hold_hot_seconds: float = Field(
         default=600.0, gt=0,
@@ -247,6 +247,30 @@ class Settings(BaseSettings):
             "Минимальная прибыль до пика, %, для активации трейлинга "
             "на «горячих» пулах."
         ),
+    )
+    tp1_cold_pct: float = Field(
+        default=10.0, gt=0, description="Первый тейк-профит «холодных» пулов (< cold_volume_sol), %."
+    )
+    tp2_cold_pct: float = Field(
+        default=15.0, gt=0, description="Второй тейк-профит «холодных» пулов, %."
+    )
+    trailing_stop_cold_pct: float = Field(
+        default=8.0, gt=0, le=100, description="Трейлинг «холодных» пулов, % отката от пика."
+    )
+    trailing_activation_cold_pct: float = Field(
+        default=5.0, ge=0, description="Активация трейлинга «холодных» пулов, % прибыли до пика."
+    )
+    tp1_warm_pct: float = Field(
+        default=15.0, gt=0, description="Первый тейк-профит «тёплых» пулов (cold..hot по объёму), %."
+    )
+    tp2_warm_pct: float = Field(
+        default=30.0, gt=0, description="Второй тейк-профит «тёплых» пулов, %."
+    )
+    trailing_stop_warm_pct: float = Field(
+        default=10.0, gt=0, le=100, description="Трейлинг «тёплых» пулов, % отката от пика."
+    )
+    trailing_activation_warm_pct: float = Field(
+        default=7.0, ge=0, description="Активация трейлинга «тёплых» пулов, % прибыли до пика."
     )
     tp1_size_pct: float = Field(
         default=50.0, gt=0, le=100, description="Доля позиции для TP1, %."

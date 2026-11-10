@@ -1360,6 +1360,14 @@ class LivePipeline:
         "tp2_hot_pct",
         "max_hold_hot_seconds",
         "trailing_activation_hot_pct",
+        "tp1_cold_pct",
+        "tp2_cold_pct",
+        "trailing_stop_cold_pct",
+        "trailing_activation_cold_pct",
+        "tp1_warm_pct",
+        "tp2_warm_pct",
+        "trailing_stop_warm_pct",
+        "trailing_activation_warm_pct",
     )
 
     def _backtest_strategy_kwargs(
