@@ -196,7 +196,7 @@ class Settings(BaseSettings):
         description="Минимальная доля покупок для входа.",
     )
     volume_velocity_threshold: float = Field(
-        default=1.8, gt=0, description="Минимальный объём покупок за окно, SOL."
+        default=1.0, gt=0, description="Минимальный объём покупок за окно, SOL."
     )
     volume_velocity_cold_threshold: float = Field(
         default=2.0, gt=0,
