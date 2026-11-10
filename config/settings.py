@@ -95,7 +95,7 @@ class Settings(BaseSettings):
         default=5.0, gt=0, lt=100, description="Предельный Price Impact ордера, %."
     )
     token_reliable_seconds: float = Field(
-        default=30.0, gt=0,
+        default=5.0, gt=0,
         description=(
             "Возраст токена с момента обнаружения, после которого он считается "
             "надёжным: входы/усреднения разрешены только по токенам старше "
