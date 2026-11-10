@@ -257,6 +257,18 @@ class MomentumMetrics(BaseModel):
     sell_volume_sol: float = Field(default=0.0, ge=0, description="Объём продаж, SOL.")
     largest_sell_sol: float = Field(default=0.0, ge=0, description="Крупнейшая продажа, SOL.")
     last_price: float = Field(default=0.0, ge=0, description="Последняя цена, SOL за токен.")
+    first_price: float = Field(
+        default=0.0, ge=0,
+        description="Цена старейшего события окна (0 = неизвестна), SOL за токен.",
+    )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def window_price_gain_pct(self) -> float:
+        """Рост цены за окно, % (0, если начальная цена неизвестна)."""
+        if self.first_price <= 0 or self.last_price <= 0:
+            return 0.0
+        return (self.last_price / self.first_price - 1.0) * 100.0
 
     @computed_field  # type: ignore[prop-decorator]
     @property

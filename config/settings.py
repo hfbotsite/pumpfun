@@ -184,6 +184,20 @@ class Settings(BaseSettings):
     volume_velocity_threshold: float = Field(
         default=1.5, gt=0, description="Минимальный объём покупок за окно, SOL."
     )
+    min_entry_buy_count: int = Field(
+        default=3, ge=1,
+        description=(
+            "Минимальное число покупок в окне входа: отсекает вход за одним "
+            "кит-ордером, сформировавшим сигнал."
+        ),
+    )
+    max_entry_price_gain_pct: float = Field(
+        default=30.0, gt=0,
+        description=(
+            "Максимальный рост цены за окно входа, %: выше — «погоня за "
+            "хвостом волны», вход запрещён."
+        ),
+    )
 
     # ------------------------------------------------------------------ Выход
     tp1_pct: float = Field(default=30.0, gt=0, description="Первый тейк-профит, %.")
@@ -192,19 +206,33 @@ class Settings(BaseSettings):
         default=50.0, gt=0, le=100, description="Доля позиции для TP1, %."
     )
     trailing_stop_pct: float = Field(
-        default=10.0, gt=0, le=100, description="Откат от пика для трейлинг-стопа, %."
+        default=20.0, gt=0, le=100, description="Откат от пика для трейлинг-стопа, %."
+    )
+    trailing_activation_pct: float = Field(
+        default=15.0, ge=0,
+        description=(
+            "Минимальная прибыль от входа до пика, %, после которой "
+            "трейлинг-стоп включается (из убытка не срабатывает)."
+        ),
     )
     hard_stop_loss_pct: float = Field(
         default=30.0, gt=0, le=100, description="Жёсткий стоп-лосс, % от входа."
     )
     exit_window_seconds: float = Field(
-        default=2.0, gt=0, description="Окно детекта затухания импульса, c."
+        default=5.0, gt=0, description="Окно детекта затухания импульса, c."
     )
     exit_ratio_threshold: float = Field(
-        default=0.40, ge=0, le=1, description="Порог падения Buy/Sell Ratio."
+        default=0.25, ge=0, le=1, description="Порог падения Buy/Sell Ratio."
+    )
+    exhaustion_grace_seconds: float = Field(
+        default=10.0, ge=0,
+        description=(
+            "Защитная пауза после входа, c: выход по затуханию объёма "
+            "не срабатывает, пока позиция моложе этого порога."
+        ),
     )
     large_sell_sol: float = Field(
-        default=1.0, gt=0, description="Порог крупной продажи, SOL."
+        default=3.0, gt=0, description="Порог крупной продажи, SOL."
     )
     max_hold_seconds: float = Field(
         default=180.0, gt=0, description="Принудительный выход по таймауту, c."

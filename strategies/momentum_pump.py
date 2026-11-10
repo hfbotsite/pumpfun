@@ -65,12 +65,16 @@ class MomentumPumpStrategy(BaseStrategy):
         entry_filters: FilterChain | None = None,
         buy_sell_ratio_threshold: float | None = None,
         volume_velocity_threshold: float | None = None,
+        min_entry_buy_count: int | None = None,
+        max_entry_price_gain_pct: float | None = None,
         tp1_pct: float | None = None,
         tp2_pct: float | None = None,
         tp1_size_pct: float | None = None,
         trailing_stop_pct: float | None = None,
+        trailing_activation_pct: float | None = None,
         hard_stop_loss_pct: float | None = None,
         exit_ratio_threshold: float | None = None,
+        exhaustion_grace_seconds: float | None = None,
         large_sell_sol: float | None = None,
         max_hold_seconds: float | None = None,
     ) -> None:
@@ -81,12 +85,19 @@ class MomentumPumpStrategy(BaseStrategy):
                 ``LiquidityGuard`` + ``SecurityGuard``.
             buy_sell_ratio_threshold: Минимальная доля покупок для входа (0..1).
             volume_velocity_threshold: Минимальный объём покупок в окне, SOL.
+            min_entry_buy_count: Минимальное число покупок в окне входа.
+            max_entry_price_gain_pct: Максимальный рост цены за окно, %
+                (защита от погони за хвостом волны).
             tp1_pct: Первый тейк-профит, %.
             tp2_pct: Второй тейк-профит, %.
             tp1_size_pct: Доля позиции, фиксируемая на TP1, %.
             trailing_stop_pct: Откат от пика для трейлинг-стопа, %.
+            trailing_activation_pct: Прибыль от входа до пика, %, после
+                которой трейлинг включается.
             hard_stop_loss_pct: Жёсткий стоп-лосс, %.
             exit_ratio_threshold: Порог падения Buy/Sell Ratio для выхода (0..1).
+            exhaustion_grace_seconds: Пауза после входа, в течение которой
+                выход по затуханию объёма не срабатывает, c.
             large_sell_sol: Порог «крупной продажи», SOL.
             max_hold_seconds: Максимальное время удержания позиции, c.
         """
@@ -103,6 +114,16 @@ class MomentumPumpStrategy(BaseStrategy):
             if volume_velocity_threshold is None
             else volume_velocity_threshold
         )
+        self._min_entry_buy_count = (
+            settings.min_entry_buy_count
+            if min_entry_buy_count is None
+            else min_entry_buy_count
+        )
+        self._max_entry_price_gain_pct = (
+            settings.max_entry_price_gain_pct
+            if max_entry_price_gain_pct is None
+            else max_entry_price_gain_pct
+        )
         self._tp1_pct = settings.tp1_pct if tp1_pct is None else tp1_pct
         self._tp2_pct = settings.tp2_pct if tp2_pct is None else tp2_pct
         self._tp1_size_pct = (
@@ -113,6 +134,11 @@ class MomentumPumpStrategy(BaseStrategy):
             if trailing_stop_pct is None
             else trailing_stop_pct
         )
+        self._trailing_activation_pct = (
+            settings.trailing_activation_pct
+            if trailing_activation_pct is None
+            else trailing_activation_pct
+        )
         self._hard_stop_loss_pct = (
             settings.hard_stop_loss_pct
             if hard_stop_loss_pct is None
@@ -122,6 +148,11 @@ class MomentumPumpStrategy(BaseStrategy):
             settings.exit_ratio_threshold
             if exit_ratio_threshold is None
             else exit_ratio_threshold
+        )
+        self._exhaustion_grace_seconds = (
+            settings.exhaustion_grace_seconds
+            if exhaustion_grace_seconds is None
+            else exhaustion_grace_seconds
         )
         self._large_sell_sol = (
             settings.large_sell_sol if large_sell_sol is None else large_sell_sol
@@ -168,6 +199,23 @@ class MomentumPumpStrategy(BaseStrategy):
                 return self._hold_signal(
                     context, f"{result.filter_name}: {result.reason}"
                 )
+
+        # Защита от погони: если цена уже улетела за окно, покупаем хвост
+        # волны — продолжения обычно нет (статистика: пик ≤ 1.005 у 90%).
+        gain = metrics.window_price_gain_pct
+        if gain > self._max_entry_price_gain_pct:
+            return self._hold_signal(
+                context,
+                f"погоня за ценой: рост {gain:.1f}% за окно "
+                f"> {self._max_entry_price_gain_pct:.0f}%",
+            )
+
+        if metrics.buy_count < self._min_entry_buy_count:
+            return self._hold_signal(
+                context,
+                f"мало покупок в окне: {metrics.buy_count} "
+                f"< {self._min_entry_buy_count} (вход за одним китом)",
+            )
 
         ratio = metrics.buy_sell_ratio
         if ratio < self._buy_sell_ratio_threshold:
@@ -308,6 +356,11 @@ class MomentumPumpStrategy(BaseStrategy):
         """
         if position.peak_price <= position.entry_price:
             return None
+        # Порог активации: трейлинг включается только с прибыли — иначе
+        # он дублирует жёсткий стоп и выходит «из шума» с малым минусом.
+        peak_gain_pct = (position.peak_price / position.entry_price - 1.0) * 100.0
+        if peak_gain_pct < self._trailing_activation_pct:
+            return None
         drawdown = position.drawdown_from_peak_pct(current_price)
         if drawdown >= self._trailing_stop_pct:
             return self._exit_signal(
@@ -337,6 +390,12 @@ class MomentumPumpStrategy(BaseStrategy):
         """
         metrics = context.metrics
         if metrics is None:
+            return None
+
+        # Grace-period: сразу после входа поток продаж — норма, а не затухание;
+        # без паузы позиция умирает на первой же продаже (hold 0 c в статистике).
+        age = context.timestamp - position.opened_at
+        if age < self._exhaustion_grace_seconds:
             return None
 
         if metrics.largest_sell_sol >= self._large_sell_sol:

@@ -163,10 +163,14 @@ class RollingTradeWindow:
         buy_volume_sol = 0.0
         sell_volume_sol = 0.0
         largest_sell_sol = 0.0
+        first_price = 0.0
 
         for event in reversed(self._events):
             if event.timestamp < cutoff:
                 break
+            # Цена старейшего события окна: итерация идёт от свежих к старым,
+            # поэтому к концу цикла здесь остаётся цена начала окна.
+            first_price = event.price_sol_per_token
             if event.side == TradeSide.BUY:
                 buy_count += 1
                 buy_volume_sol += event.sol_amount
@@ -183,6 +187,7 @@ class RollingTradeWindow:
             sell_volume_sol=sell_volume_sol,
             largest_sell_sol=largest_sell_sol,
             last_price=self._last_price,
+            first_price=first_price,
         )
 
     def clear(self) -> None:

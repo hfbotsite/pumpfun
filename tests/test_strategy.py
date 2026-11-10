@@ -173,10 +173,10 @@ class TestExitTrailing:
     """Трейлинг-стоп от пика (10%)."""
 
     def test_drawdown_from_peak_exits(self) -> None:
-        """Откат 10%+ от пика выше входа — выход."""
+        """Откат 20%+ от пика выше входа — выход (активация с +15%)."""
         strategy = MomentumPumpStrategy()
         position = make_position(entry_price=1.0, peak_price=1.3)
-        metrics = hot_metrics(last_price=1.16)  # откат 10.77%, PnL +16%
+        metrics = hot_metrics(last_price=1.03)  # откат 20.77%, PnL +3%
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
         assert signal is not None
         assert signal.exit_reason.value == "trailing_stop"
@@ -201,19 +201,19 @@ class TestExitExhaustion:
     """Затухание импульса: крупная продажа, падение ratio."""
 
     def test_large_sell_triggers_exit(self) -> None:
-        """Продажа >= 1 SOL в окне выхода закрывает позицию."""
-        strategy = MomentumPumpStrategy()
+        """Продажа >= 3 SOL в окне выхода после grace-паузы закрывает позицию."""
+        strategy = MomentumPumpStrategy(exhaustion_grace_seconds=0.0)
         position = make_position()
         metrics = hot_metrics(
-            last_price=position.entry_price, largest_sell_sol=1.2
+            last_price=position.entry_price, largest_sell_sol=3.2
         )
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
         assert signal.exit_reason.value == "volume_exhaustion"
         assert "крупная продажа" in signal.reason
 
     def test_ratio_drop_triggers_exit(self) -> None:
-        """Ratio ниже 0.40 — выход по затуханию."""
-        strategy = MomentumPumpStrategy()
+        """Ratio ниже 0.25 после grace-паузы — выход по затуханию."""
+        strategy = MomentumPumpStrategy(exhaustion_grace_seconds=0.0)
         position = make_position()
         metrics = hot_metrics(
             last_price=position.entry_price, buy_count=1, sell_count=9
@@ -275,3 +275,80 @@ def test_position_factories_agree() -> None:
     position = make_position()
     assert position.base_mint == BASE_MINT
     assert position.pool_address == POOL_ADDRESS
+
+
+class TestEntryGuards:
+    """Защита от погони и минимум покупок в окне входа."""
+
+    def test_chase_blocked_on_price_spike(self) -> None:
+        """Рост цены > 30% за окно — вход запрещён (покупка хвоста волны)."""
+        strategy = MomentumPumpStrategy()
+        metrics = hot_metrics(
+            buy_count=6, last_price=5e-9, first_price=3e-9  # рост +67%
+        )
+        signal = strategy.evaluate_entry(make_entry_context(metrics))
+        assert signal.action.value == "hold"
+        assert "погоня за ценой" in signal.reason
+
+    def test_moderate_growth_enters(self) -> None:
+        """Рост в пределах порога — вход разрешён."""
+        strategy = MomentumPumpStrategy()
+        metrics = hot_metrics(
+            buy_count=8, last_price=5e-9, first_price=4e-9  # рост +25%
+        )
+        signal = strategy.evaluate_entry(make_entry_context(metrics))
+        assert signal.action.value == "enter"
+
+    def test_single_whale_buy_blocked(self) -> None:
+        """Одна кит-покупка в окне (buy_count < 3) — вход запрещён."""
+        strategy = MomentumPumpStrategy()
+        metrics = hot_metrics(buy_count=1, buy_volume_sol=2.5)
+        signal = strategy.evaluate_entry(make_entry_context(metrics))
+        assert signal.action.value == "hold"
+        assert "мало покупок" in signal.reason
+
+
+class TestExhaustionGrace:
+    """Grace-period: затухание не срабатывает сразу после входа."""
+
+    def test_exhaustion_ignored_during_grace(self) -> None:
+        """Продажа 5 SOL через 1 c после входа — удерживаем (grace 10 c)."""
+        strategy = MomentumPumpStrategy()  # grace 10 c
+        position = make_position()  # opened_at=1000
+        metrics = hot_metrics(
+            last_price=position.entry_price, largest_sell_sol=5.0
+        )
+        # make_exit_context: timestamp=1001 → возраст позиции 1 c < grace.
+        assert strategy.evaluate_exit(position, make_exit_context(metrics)) is None
+
+    def test_exhaustion_works_after_grace(self) -> None:
+        """Тот же поток продаж через 11 c — выход по затуханию."""
+        strategy = MomentumPumpStrategy()
+        position = make_position()
+        metrics = hot_metrics(
+            last_price=position.entry_price, largest_sell_sol=5.0
+        )
+        context = make_exit_context(metrics, timestamp=1011.0)
+        signal = strategy.evaluate_exit(position, context)
+        assert signal is not None
+        assert signal.exit_reason.value == "volume_exhaustion"
+
+
+class TestTrailingActivation:
+    """Трейлинг включается только с прибыли >= 15% от входа."""
+
+    def test_trailing_inactive_below_activation(self) -> None:
+        """Пик +8% от входа: откат 20% — но трейлинг ещё не активен."""
+        strategy = MomentumPumpStrategy()
+        position = make_position(entry_price=1.0, peak_price=1.08)
+        metrics = hot_metrics(last_price=0.90)  # откат 16.7% от пика, PnL -10%
+        assert strategy.evaluate_exit(position, make_exit_context(metrics)) is None
+
+    def test_trailing_active_above_activation(self) -> None:
+        """Пик +20% от входа, откат 20% — выход по трейлингу."""
+        strategy = MomentumPumpStrategy()
+        position = make_position(entry_price=1.0, peak_price=1.20)
+        metrics = hot_metrics(last_price=0.95)  # откат 20.8% от пика, PnL -5%
+        signal = strategy.evaluate_exit(position, make_exit_context(metrics))
+        assert signal is not None
+        assert signal.exit_reason.value == "trailing_stop"

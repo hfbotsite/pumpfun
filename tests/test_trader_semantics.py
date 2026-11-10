@@ -82,7 +82,7 @@ def make_fresh_trader(
     return MomentumTrader(
         executor=executor,
         portfolio=PortfolioManager(),
-        strategy=MomentumPumpStrategy(),
+        strategy=MomentumPumpStrategy(min_entry_buy_count=1),
         security_provider=clean_provider,
         trade_amount_sol=0.5,
         **kwargs,
