@@ -81,6 +81,8 @@ th{color:var(--dim);font-weight:500}
 .bar>i{display:block;height:100%}
 pre{margin:0;max-height:460px;overflow:auto;font:12px/1.5 Consolas,monospace;white-space:pre-wrap}
 code{color:var(--blue)}
+a.mintlink{text-decoration:none}
+a.mintlink:hover{text-decoration:underline;text-decoration-color:var(--blue)}
 svg{width:100%;height:90px;display:block}
 ul{margin:6px 0 0;padding-left:18px}
 li{margin:2px 0}
@@ -264,7 +266,7 @@ function render(d){
   drawChart(d.pnl_curve||[]);
 
   const rows=(d.positions||[]).map(p=>`<tr>
-    <td><code title="${esc(p.base_mint)}">${esc(short(p.base_mint))}</code></td>
+    <td><a class="mintlink" href="https://pump.fun/coin/${esc(p.base_mint)}" target="_blank" rel="noopener noreferrer" title="Открыть график на pump.fun"><code title="${esc(p.base_mint)}">${esc(short(p.base_mint))}</code></a></td>
     <td>${p.stage}</td><td>${fmt(p.pool_sol||0,1)}</td><td>${fmt(p.volume_sol||0,1)}</td>
     <td>${fmt(p.entry_sol,3)}</td><td>${fmt(p.token_amount,0)}</td>
     <td>${price(p.entry_price)}</td><td>${price(p.current_price)}</td>
