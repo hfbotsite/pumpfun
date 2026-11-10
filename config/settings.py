@@ -95,7 +95,7 @@ class Settings(BaseSettings):
         default=5.0, gt=0, lt=100, description="Предельный Price Impact ордера, %."
     )
     token_reliable_seconds: float = Field(
-        default=5.0, ge=0,
+        default=20.0, ge=0,
         description=(
             "Возраст токена с момента обнаружения, после которого он считается "
             "надёжным: входы/усреднения разрешены только по токенам старше "
@@ -114,7 +114,7 @@ class Settings(BaseSettings):
         ),
     )
     reentry_cooldown_seconds: float = Field(
-        default=20.0, ge=0,
+        default=90.0, ge=0,
         description=(
             "Пауза после закрытия сделки по mint, перед новым входом, c "
             "(защита от чёрствого churn по затухающему токену)."
@@ -214,7 +214,7 @@ class Settings(BaseSettings):
         ),
     )
     max_entry_price_gain_pct: float = Field(
-        default=50.0, gt=0,
+        default=20.0, gt=0,
         description=(
             "Максимальный рост цены за окно входа, %: выше — «погоня за "
             "хвостом волны», вход запрещён."
