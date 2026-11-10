@@ -233,11 +233,6 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
         <button class="btn bt-run" id="bt_run">ЗАПУСТИТЬ</button>
         <button class="btn bt-stop" id="bt_stop" disabled title="Остановить прогон и показать статистику по пройденной части">ОСТАНОВИТЬ</button>
       </div>
-        <span id="bt_status" style="color:var(--dim);font-size:12px"></span>
-        <button class="btn mini" id="bt_sample" title="Заполнить форму демонстрационным CSV">демо-CSV</button>
-        <button class="btn bt-run" id="bt_run">ЗАПУСТИТЬ</button>
-        <button class="btn bt-stop" id="bt_stop" disabled title="Остановить прогон и показать статистику по пройденной части">ОСТАНОВИТЬ</button>
-      </div>
       <div id="bt_results"></div>
     </div>
   </section>
