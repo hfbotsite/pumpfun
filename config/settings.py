@@ -199,7 +199,7 @@ class Settings(BaseSettings):
         default=1.0, gt=0, description="Минимальный объём покупок за окно, SOL."
     )
     volume_velocity_cold_threshold: float = Field(
-        default=2.0, gt=0,
+        default=1.5, gt=0,
         description=(
             "Усиленный порог объёма покупок, SOL, для «холодных» пулов "
             "(объём торгов < cold_volume_sol): отсекает вход за единичной "
