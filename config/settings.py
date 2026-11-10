@@ -95,7 +95,7 @@ class Settings(BaseSettings):
         default=5.0, gt=0, lt=100, description="Предельный Price Impact ордера, %."
     )
     token_reliable_seconds: float = Field(
-        default=5.0, ge=0,
+        default=10.0, ge=0,
         description=(
             "Возраст токена с момента обнаружения, после которого он считается "
             "надёжным: входы/усреднения разрешены только по токенам старше "
@@ -105,6 +105,20 @@ class Settings(BaseSettings):
     max_entries_per_mint: int = Field(
         default=10, ge=1,
         description="Максимум входов по одному mint (вход + усреднения).",
+    )
+    average_only_in_profit: bool = Field(
+        default=True,
+        description=(
+            "Усреднять только при цене >= цены входа: докупки в затухающий "
+            "токен запрещены."
+        ),
+    )
+    reentry_cooldown_seconds: float = Field(
+        default=90.0, ge=0,
+        description=(
+            "Пауза после закрытия сделки по mint, перед новым входом, c "
+            "(защита от чёрствого churn по затухающему токену)."
+        ),
     )
     capital_sol: float | None = Field(
         default=None, gt=0, description="Лимит свободного капитала, SOL (None — без лимита)."
@@ -182,7 +196,7 @@ class Settings(BaseSettings):
         description="Минимальная доля покупок для входа.",
     )
     volume_velocity_threshold: float = Field(
-        default=1.5, gt=0, description="Минимальный объём покупок за окно, SOL."
+        default=1.8, gt=0, description="Минимальный объём покупок за окно, SOL."
     )
     volume_velocity_cold_threshold: float = Field(
         default=2.0, gt=0,

@@ -433,3 +433,99 @@ class TestSilentSweep:
         pipeline._trading_started_at = time.time()
         await pipeline._sweep_stale_positions(trader)
         assert trader.portfolio.open_count == 1
+
+
+class TestAverageOnlyInProfit:
+    """Усреднение разрешено только при цене >= цены входа."""
+
+    def open_pos(self, trader: MomentumTrader) -> None:
+        """Открывает позицию по цене события 5e-6.
+
+        Args:
+            trader: Движок с портфелем.
+        """
+        trader.portfolio.open_position(
+            base_mint=BASE_MINT,
+            pool_address=POOL_ADDRESS,
+            dex=DEXType.PUMP_FUN,
+            entry_price=5e-6,
+            entry_sol=0.5,
+            token_amount=1_000_000,
+            opened_at=1000.0,
+        )
+
+    async def test_average_below_entry_blocked(self) -> None:
+        """Цена ниже входа — докупки нет (Even при ENTER-сигнале)."""
+        executor = ManualExecutor()
+        trader = MomentumTrader(
+            executor=executor,
+            portfolio=PortfolioManager(),
+            strategy=AlwaysEnterStrategy(),
+            security_provider=clean_provider,
+            trade_amount_sol=0.5,
+        )
+        self.open_pos(trader)
+        pool = make_pool(created_at=900.0)
+        # Цена события 2.0/500000 = 4e-6 < входа 5e-6.
+        await trader.process_event(
+            make_event(sol_amount=2.0, token_amount=500_000, timestamp=1000.0),
+            pool,
+        )
+        assert not executor.buy_orders
+        position = trader.portfolio.get(BASE_MINT)
+        assert position is not None
+        assert position.token_amount == 1_000_000
+
+    async def test_average_at_entry_allowed(self) -> None:
+        """Цена на уровне входа (PnL 0) — усреднение работает."""
+        executor = ManualExecutor()
+        executor.buy_results = [buy_result(500_000)]
+        trader = MomentumTrader(
+            executor=executor,
+            portfolio=PortfolioManager(),
+            strategy=AlwaysEnterStrategy(),
+            security_provider=clean_provider,
+            trade_amount_sol=0.5,
+        )
+        self.open_pos(trader)
+        pool = make_pool(created_at=900.0)
+        await trader.process_event(hot_event(timestamp=1000.0), pool)
+        position = trader.portfolio.get(BASE_MINT)
+        assert position is not None
+        assert position.entries_count == 2
+
+
+class TestReentryCooldown:
+    """Кулдаун повторного входа по mint после закрытия сделки."""
+
+    async def test_reentry_blocked_within_cooldown(self) -> None:
+        """Вход через 2 c после закрытия — HOLD (куладаун 5 c)."""
+        executor = ManualExecutor()
+        trader = make_fresh_trader(executor, reentry_cooldown_seconds=5.0)
+        pool = make_pool(created_at=900.0)
+        # Вход + закрытие (force_close фиксирует closed_at=1000).
+        await trader.process_event(hot_event(timestamp=1000.0), pool)
+        trader.portfolio.force_close(
+            BASE_MINT, exit_price=5e-6, closed_at=1000.0
+        )
+        decision = await trader.process_event(
+            hot_event(timestamp=1002.0), pool
+        )
+        assert decision.action is SignalAction.HOLD
+        assert "куладаун повторного входа" in decision.reason
+        assert trader.portfolio.open_count == 0
+
+    async def test_reentry_allowed_after_cooldown(self) -> None:
+        """Вход после истечения кулдауна — разрешён."""
+        executor = ManualExecutor()
+        trader = make_fresh_trader(executor, reentry_cooldown_seconds=5.0)
+        pool = make_pool(created_at=900.0)
+        await trader.process_event(hot_event(timestamp=1000.0), pool)
+        trader.portfolio.force_close(
+            BASE_MINT, exit_price=5e-6, closed_at=1000.0
+        )
+        decision = await trader.process_event(
+            hot_event(timestamp=1006.0), pool
+        )
+        assert decision.action is SignalAction.ENTER
+        assert trader.portfolio.open_count == 1

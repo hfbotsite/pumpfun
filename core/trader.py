@@ -139,6 +139,7 @@ class MomentumTrader:
         capital_sol: float | None = None,
         token_reliable_seconds: float | None = None,
         max_entries_per_mint: int | None = None,
+        reentry_cooldown_seconds: float | None = None,
     ) -> None:
         """Инициализирует движок решений.
 
@@ -161,6 +162,8 @@ class MomentumTrader:
                 настроек).
             max_entries_per_mint: Максимум входов по одному mint
                 (вход + усреднения; ``None`` — из настроек).
+            reentry_cooldown_seconds: Пауза после закрытия сделки по mint
+                перед новым входом, c (``None`` — из настроек).
         """
         self._executor = executor
         self._portfolio = portfolio if portfolio is not None else PortfolioManager()
@@ -207,6 +210,11 @@ class MomentumTrader:
             settings.max_entries_per_mint
             if max_entries_per_mint is None
             else max_entries_per_mint
+        )
+        self._reentry_cooldown_seconds = (
+            settings.reentry_cooldown_seconds
+            if reentry_cooldown_seconds is None
+            else reentry_cooldown_seconds
         )
         self._blocked_until: dict[str, float] = {}
         self._position_locks: dict[str, asyncio.Lock] = {}
@@ -364,6 +372,20 @@ class MomentumTrader:
                 reason="пауза после неуспешного ордера",
             )
 
+        recent = self._portfolio.last_closed(pool.base_mint)
+        if (
+            recent is not None
+            and self._reentry_cooldown_seconds > 0
+            and event.timestamp - recent.closed_at < self._reentry_cooldown_seconds
+        ):
+            return TradeDecision(
+                action=SignalAction.HOLD,
+                reason=(
+                    f"куладаун повторного входа: {event.timestamp - recent.closed_at:.0f} c "
+                    f"< {self._reentry_cooldown_seconds:.0f} c с прошлого закрытия"
+                ),
+            )
+
         if not self._token_reliable(pool, event.timestamp):
             return TradeDecision(
                 action=SignalAction.HOLD,
@@ -492,6 +514,15 @@ class MomentumTrader:
         signal = self._strategy.evaluate_entry(context)
         if signal.action != SignalAction.ENTER:
             return None
+
+        # Усреднение только в плюс: докупки в затухающий токен (цена ниже
+        # средней входа) усиливают убыток, а не спасают позицию.
+        if settings.average_only_in_profit:
+            current = metrics.last_price
+            if current <= 0:
+                current = pool.price_sol_per_token()
+            if 0 < current < position.entry_price:
+                return None
 
         try:
             entry_quote = quote_entry(pool, sol_amount_sol=self._trade_amount_sol)

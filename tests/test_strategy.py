@@ -476,7 +476,7 @@ class TestColdVelocityGate:
         strategy = MomentumPumpStrategy()
         pool = make_pool(volume_sol=200.0)
         metrics = hot_metrics(buy_count=8).model_copy(
-            update={"buy_volume_sol": 1.4}  # velocity 1.4 >= обычных 1.2
+            update={"buy_volume_sol": 1.9}  # velocity 1.9 >= обычных 1.8
         )
         context = FilterContext(
             pool=pool,
