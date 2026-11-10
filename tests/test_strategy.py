@@ -457,7 +457,7 @@ class TestColdVelocityGate:
         strategy = MomentumPumpStrategy()
         # make_entry_context использует make_pool() без объёма (0) — холодный класс.
         metrics = hot_metrics(buy_count=6).model_copy(
-            update={"buy_volume_sol": 1.5}  # velocity 1.5 < холодных 2.0
+            update={"buy_volume_sol": 1.2}  # velocity 1.2 < холодных 1.5
         )
         signal = strategy.evaluate_entry(make_entry_context(metrics))
         # Обычный контекст: пул без объёма (0) — тоже холодный класс.
