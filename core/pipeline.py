@@ -59,6 +59,7 @@ from core.screening import ScreeningVerdict, TokenScreeningService
 from core.security import TokenSecurityResolver
 from core.trader import MomentumTrader
 from core.tx_builder import derive_bonding_curve
+from filters.liquidity_guard import real_pool_sol
 from models.trade_data import (
     DEXType,
     PoolInfo,
@@ -543,6 +544,16 @@ class LivePipeline:
                     price = pos.entry_price
                 unrealized = pos.token_amount * (price - pos.entry_price)
                 unrealized_total += unrealized
+                tracked = (
+                    self._listener.registry.get(pos.pool_address)
+                    if self._listener is not None
+                    else None
+                )
+                pool_sol = (
+                    real_pool_sol(tracked.to_pool_info())
+                    if tracked is not None
+                    else 0.0
+                )
                 positions.append(
                     {
                         "base_mint": pos.base_mint,
@@ -550,6 +561,8 @@ class LivePipeline:
                         if pos.pool_address
                         and self._is_curve_pool(pos.pool_address)
                         else "AMM",
+                        "pool_sol": pool_sol,
+                        "volume_sol": tracked.volume_sol if tracked else 0.0,
                         "entry_sol": pos.entry_sol,
                         "token_amount": pos.token_amount,
                         "entry_price": pos.entry_price,

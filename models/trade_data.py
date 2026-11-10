@@ -80,6 +80,10 @@ class PoolInfo(BaseModel):
     lp_burned: int | None = Field(default=None, ge=0, description="Сожжённый/выведенный LP (base units).")
     created_at: float = Field(default=0.0, description="Время создания пула, unix ts.")
     updated_at: float = Field(default=0.0, description="Время последнего обновления, unix ts.")
+    volume_sol: float = Field(
+        default=0.0, ge=0,
+        description="Накопленный объём торгов по пулу с момента отслеживания, SOL.",
+    )
 
     @computed_field  # type: ignore[prop-decorator]
     @property

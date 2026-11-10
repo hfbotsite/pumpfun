@@ -390,6 +390,7 @@ class PoolStreamListener:
         self._apply_bonding_curve_reserves(
             pool, event.virtual_sol_reserves, event.virtual_token_reserves
         )
+        pool.volume_sol += event.sol_amount / float(10**SOL_DECIMALS)
 
         side = TradeSide.BUY if event.is_buy else TradeSide.SELL
         trade = TradeEvent(
@@ -624,6 +625,7 @@ class PoolStreamListener:
         if sol_amount <= 0:
             return
 
+        pool.volume_sol += sol_amount
         trade = TradeEvent(
             signature=f"synthetic:{vault}:{int(pool.last_update * 1000)}",
             pool_address=pool.pool_address,

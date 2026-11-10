@@ -46,6 +46,8 @@ class TrackedPool:
     subscription_tokens: list[int] = field(default_factory=list)
     #: Последняя известная цена (SOL за токен) — обновляется трекером.
     last_price: float = 0.0
+    #: Накопленный объём торгов (SOL) с момента отслеживания пула.
+    volume_sol: float = 0.0
 
     @property
     def is_ready(self) -> bool:
@@ -80,6 +82,7 @@ class TrackedPool:
             lp_burned=self.lp_burned,
             created_at=self.created_at,
             updated_at=self.last_update,
+            volume_sol=self.volume_sol,
         )
 
 
