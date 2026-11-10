@@ -95,11 +95,11 @@ class Settings(BaseSettings):
         default=5.0, gt=0, lt=100, description="Предельный Price Impact ордера, %."
     )
     token_reliable_seconds: float = Field(
-        default=5.0, gt=0,
+        default=5.0, ge=0,
         description=(
             "Возраст токена с момента обнаружения, после которого он считается "
             "надёжным: входы/усреднения разрешены только по токенам старше "
-            "этого порога."
+            "этого порога. 0 — гейт отключён (торгуем сразу)."
         ),
     )
     max_entries_per_mint: int = Field(
