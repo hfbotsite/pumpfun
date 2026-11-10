@@ -419,7 +419,8 @@ class MomentumTrader:
 
         result = await self._executor.execute_buy(order)
         if not result.success or not result.confirmed:
-            self._block_for(pool.pool_address, event.timestamp)
+            # Не села покупка — забываем её: без паузы на пул, следующий
+            # сигнал может войти сразу.
             return TradeDecision(
                 action=SignalAction.ENTER,
                 reason=result.error or "ордер покупки отклонён",
@@ -431,7 +432,6 @@ class MomentumTrader:
         if entry_price <= 0:
             entry_price = signal.price_sol_per_token
         if entry_price <= 0 or result.token_amount <= 0:
-            self._block_for(pool.pool_address, event.timestamp)
             return TradeDecision(
                 action=SignalAction.ENTER,
                 reason="не удалось определить цену входа",
@@ -536,7 +536,7 @@ class MomentumTrader:
 
         result = await self._executor.execute_buy(order)
         if not result.success or not result.confirmed:
-            self._block_for(pool.pool_address, event.timestamp)
+            # Не села покупка усреднения — забываем её, без паузы на пул.
             return TradeDecision(
                 action=SignalAction.ENTER,
                 reason=result.error or "ордер усреднения отклонён",
@@ -675,7 +675,7 @@ class MomentumTrader:
         )
 
     def _block_for(self, pool_address: str, now: float) -> None:
-        """Ставит пул на паузу после неуспешного ордера.
+        """Ставит пул на паузу после неуспешной ПРОДАЖИ (выходов).
 
         Args:
             pool_address: Адрес пула.

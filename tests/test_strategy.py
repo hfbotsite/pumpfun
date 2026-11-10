@@ -291,8 +291,8 @@ class TestEntryGuards:
         assert "погоня за ценой" in signal.reason
 
     def test_moderate_growth_enters(self) -> None:
-        """Рост в пределах порога — вход разрешён."""
-        strategy = MomentumPumpStrategy()
+        """Рост в пределах порога (+25% при пороге 30) — вход разрешён."""
+        strategy = MomentumPumpStrategy(max_entry_price_gain_pct=30.0)
         metrics = hot_metrics(
             buy_count=8, last_price=5e-9, first_price=4e-9  # рост +25%
         )
