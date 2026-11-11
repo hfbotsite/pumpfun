@@ -201,7 +201,7 @@ cp .env.example .env   # заполните HELIUS_API_KEY и кошелёк
 | `PORTFOLIO_DB_PATH` | `data/bot.db` | SQLite-БД позиций (пусто = только память) |
 | `JITO_REQUIRE_CONFIRMATION` | `true` | Ждать подтверждения транзакции/бандла перед учётом позиции |
 | `TRADE_AMOUNT_SOL` | `0.02` | Размер входного ордера |
-| `BUY_SLIPPAGE_PCT` | `1` | Допуск проскальзывания входа, % (без MEV-защиты держим компактнее) |
+| `BUY_SLIPPAGE_PCT` | `10` | Допуск проскальзывания входа, % |
 | `SELL_SLIPPAGE_PCT` | `25` | Дисконт первой попытки выхода (вторая — с floor 0, «лестница») |
 | `MIN_POOL_SOL` | `30` | Минимальный резерв AMM-пула (PumpSwap), SOL |
 | `COMPUTE_UNIT_LIMIT` / `PRIORITY_FEE_MICRO_LAMPORTS` | `200000/1000000` | Compute Budget; 1M µL/CU ≈ 0.0002 SOL приоритетки на транзакцию |
