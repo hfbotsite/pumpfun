@@ -34,11 +34,7 @@ def hot_metrics(**overrides) -> MomentumMetrics:
     return MomentumMetrics(**fields)
 
 
-def make_entry_context(
-    metrics: MomentumMetrics | None = None,
-    dip_pct: float | None = None,
-    is_average: bool = False,
-) -> FilterContext:
+def make_entry_context(metrics: MomentumMetrics | None = None) -> FilterContext:
     """Контекст входа: хороший пул, чистый контракт, горячие метрики."""
     return FilterContext(
         pool=make_pool(),
@@ -46,8 +42,6 @@ def make_entry_context(
         security=clean_security(),
         metrics=metrics if metrics is not None else hot_metrics(),
         timestamp=1000.0,
-        dip_pct=dip_pct,
-        is_average=is_average,
     )
 
 
@@ -63,66 +57,6 @@ def make_exit_context(
         metrics=metrics,
         timestamp=timestamp,
     )
-
-
-class TestDipEntry:
-    """Усреднение на откате (dip): порог = доля стопа уровня пула."""
-
-    def test_dip_enters(self) -> None:
-        """Откат глубже порога — вход."""
-        strategy = MomentumPumpStrategy(hard_stop_cold_pct=8.0)
-        signal = strategy.evaluate_entry(
-            make_entry_context(dip_pct=3.0, is_average=True)
-        )
-        assert signal.action.value == "enter"
-
-    def test_dip_below_threshold_holds(self) -> None:
-        """Откат мельче порога — удержание."""
-        strategy = MomentumPumpStrategy(hard_stop_cold_pct=8.0)
-        signal = strategy.evaluate_entry(
-            make_entry_context(dip_pct=1.0, is_average=True)
-        )
-        assert signal.action.value == "hold"
-        assert "нет отката" in signal.reason
-
-    def test_no_candle_data_holds(self) -> None:
-        """Свечи ещё не набраны — удержание."""
-        strategy = MomentumPumpStrategy()
-        signal = strategy.evaluate_entry(
-            make_entry_context(dip_pct=None, is_average=True)
-        )
-        assert signal.action.value == "hold"
-        assert "мало данных свечей" in signal.reason
-
-    def test_tier_thresholds(self) -> None:
-        """Порог масштабируется стопом уровня пула (×0.33)."""
-        strategy = MomentumPumpStrategy(
-            hard_stop_cold_pct=8.0,
-            hard_stop_loss_pct=40.0,
-            hard_stop_hot_pct=50.0,
-        )
-        # cold (объём 0): порог 8×0.33=2.64
-        assert (
-            strategy.evaluate_entry(
-                make_entry_context(dip_pct=3.0, is_average=True)
-            ).action.value
-            == "enter"
-        )
-        assert (
-            strategy.evaluate_entry(
-                make_entry_context(dip_pct=2.0, is_average=True)
-            ).action.value
-            == "hold"
-        )
-        # hot (объём 500): порог 50×0.33=16.5
-        hot_ctx = replace(
-            make_entry_context(dip_pct=17.0, is_average=True),
-            pool=make_pool(volume_sol=500.0),
-            dip_pct=17.0,
-        )
-        assert strategy.evaluate_entry(hot_ctx).action.value == "enter"
-        hot_low = replace(hot_ctx, dip_pct=10.0)
-        assert strategy.evaluate_entry(hot_low).action.value == "hold"
 
 
 class TestExitHardStop:
@@ -456,7 +390,7 @@ class TestTieredHardStop:
 
 
 class TestMinVolumeGate:
-    """Объёмный фильтр: вход запрещён до набора объёма."""
+    """Объёмный фильтр: вход запрещён до набора объёма (усреднение — тоже, объём растёт монотонно)."""
 
     def test_low_volume_blocked(self) -> None:
         """Объём 20 SOL (< 30) — HOLD, токен под мониторингом."""
@@ -479,12 +413,3 @@ class TestMinVolumeGate:
         signal = strategy.evaluate_entry(ctx)
         assert signal.action.value == "enter"
 
-    def test_average_not_blocked(self) -> None:
-        """Усреднение объёмным фильтром не блокируется (пул уже торгуется)."""
-        strategy = MomentumPumpStrategy(min_volume_sol=30.0)
-        ctx = replace(
-            make_entry_context(dip_pct=99.0, is_average=True),
-            pool=make_pool(volume_sol=5.0),
-        )
-        signal = strategy.evaluate_entry(ctx)
-        assert signal.action.value == "enter"

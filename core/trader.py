@@ -36,7 +36,6 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
-from analytics.candles import DIP_TIMEFRAMES, CandleBuilder
 from analytics.indicators import StreamingIndicators
 from config.settings import settings
 from core.orders import (
@@ -225,14 +224,9 @@ class MomentumTrader:
         )
         self._blocked_until: dict[str, float] = {}
         self._position_locks: dict[str, asyncio.Lock] = {}
-        # Свечной агрегатор по пулам (детект отката для входа).
-        self._candles: dict[str, CandleBuilder] = {}
         # Накопленный объём по пулам из потока событий (для volume-гейта
         # и уровней тейков): единый источник для live и бэктеста.
         self._pool_volume: dict[str, float] = {}
-        self._dip_timeframe = DIP_TIMEFRAMES.get(
-            settings.entry_dip_mode, DIP_TIMEFRAMES["1s"]
-        )
 
     #: Окно, в котором клик по только что закрытой позиции считает
     #: «уже закрыто», а не ошибкой (снимок дашборда отстаёт на интервал SSE).
@@ -293,11 +287,6 @@ class MomentumTrader:
             :class:`TradeDecision` с действием, сигналом и результатом ордера.
         """
         self._indicators.record(event)
-        builder = self._candles.get(event.pool_address)
-        if builder is None:
-            builder = CandleBuilder(self._dip_timeframe)
-            self._candles[event.pool_address] = builder
-        builder.add(event)
 
         # Накопленный объём: база = max(значение снапшота, свой счётчик),
         # чтобы не терять объём, пришедший из listener'а.
@@ -539,9 +528,7 @@ class MomentumTrader:
             pool.pool_address, self._entry_window_seconds, now=event.timestamp
         )
         security = await self._security_provider(pool)
-        context = self._build_context(
-            pool, metrics, security, event.timestamp, is_average=True
-        )
+        context = self._build_context(pool, metrics, security, event.timestamp)
         signal = self._strategy.evaluate_entry(context)
         if signal.action != SignalAction.ENTER:
             return None
@@ -685,8 +672,6 @@ class MomentumTrader:
         metrics: MomentumMetrics,
         security: TokenSecurity | None,
         timestamp: float,
-        *,
-        is_average: bool = False,
     ) -> FilterContext:
         """Собирает контекст фильтрации для стратегии.
 
@@ -699,16 +684,12 @@ class MomentumTrader:
         Returns:
             :class:`~filters.base_filter.FilterContext`.
         """
-        builder = self._candles.get(pool.pool_address)
-        dip = builder.dip_pct(settings.entry_dip_mode) if builder else None
         return FilterContext(
             pool=pool,
             trade_amount_sol=self._trade_amount_sol,
             security=security,
             metrics=metrics,
             timestamp=timestamp if timestamp > 0 else time.time(),
-            dip_pct=dip,
-            is_average=is_average,
         )
 
     def _block_for(self, pool_address: str, now: float) -> None:

@@ -40,10 +40,6 @@ class FilterContext:
     security: TokenSecurity | None = None
     metrics: MomentumMetrics | None = None
     timestamp: float = field(default_factory=time.time)
-    #: Глубина отката на выбранном таймфрейме, % (``None`` — мало данных свечей).
-    dip_pct: float | None = None
-    #: Контекст усреднения (dip-стратегия) вместо нового входа (momentum).
-    is_average: bool = False
 
     @property
     def base_mint(self) -> str:

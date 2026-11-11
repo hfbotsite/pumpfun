@@ -283,18 +283,15 @@ class MomentumPumpStrategy(BaseStrategy):
 
     # ------------------------------------------------------------- Вход
     def evaluate_entry(self, context: FilterContext) -> TradeSignal:
-        """Принимает решение по контексту: вход или усреднение.
+        """Принимает решение о входе/усреднении по momentum-сигналу.
 
-        * **Новый вход** (``is_average=False``): momentum-вход на росте —
-          фильтры -> погоня за ценой -> минимум покупок -> velocity
-          (усиленный для холодных пулов) -> Buy/Sell Ratio.
-        * **Усреднение** (``is_average=True``): стратегия «buy the dip» —
-          вход по откату на свечном таймфрейме (``ENTRY_DIP_MODE``),
-          порог = доля стоп-лосса уровня пула; докупки в минус
-          дополнительно отсечены ``AVERAGE_ONLY_IN_PROFIT`` в движке.
+        Порядок: фильтры -> объёмный минимум -> погоня за ценой ->
+        минимум покупок -> velocity (усиленный для холодных пулов) ->
+        Buy/Sell Ratio. Усреднение открытой позиции проходит те же гейты;
+        докупки в минус отсечены ``AVERAGE_ONLY_IN_PROFIT`` в движке.
 
         Args:
-            context: Контекст с пулом, метриками и глубиной отката.
+            context: Контекст с пулом и метриками окна входа.
 
         Returns:
             Сигнал ``ENTER`` при выполнении условий, иначе ``HOLD``.
@@ -309,10 +306,7 @@ class MomentumPumpStrategy(BaseStrategy):
                     context, f"{result.filter_name}: {result.reason}"
                 )
 
-        if context.is_average:
-            return self._evaluate_average(context)
-
-        # --- Новый вход: momentum на росте цены --------------------------
+        # --- Вход и усреднение: momentum на росте цены -------------------
         # Объёмный фильтр: мониторим токен, входим по достижении объёма.
         volume = getattr(context.pool, "volume_sol", 0.0)
         if volume < self._min_volume_sol:
@@ -367,35 +361,6 @@ class MomentumPumpStrategy(BaseStrategy):
             f"ratio={ratio:.3f}, velocity={velocity:.3f} SOL/{metrics.window_seconds:.1f}s",
         )
 
-    def _evaluate_average(self, context: FilterContext) -> TradeSignal:
-        """Dip-гейт усреднения: откат на свечном таймфрейме.
-
-        Args:
-            context: Контекст актива (``dip_pct`` от строителя свечей).
-
-        Returns:
-            ``ENTER`` при достижении порога отката, иначе ``HOLD``.
-        """
-        dip = context.dip_pct
-        if dip is None:
-            return self._hold_signal(
-                context,
-                "мало данных свечей: история короче таймфрейма отката",
-            )
-        threshold = self._dip_threshold(context.pool)
-        if dip < threshold:
-            return self._hold_signal(
-                context,
-                f"нет отката: dip {dip:.2f}% < {threshold:.2f}% "
-                f"(режим {settings.entry_dip_mode})",
-            )
-        return self._enter_signal(
-            context,
-            f"усреднение на откате: dip {dip:.2f}% >= {threshold:.2f}% "
-            f"(режим {settings.entry_dip_mode})",
-        )
-
-    # ------------------------------------------------------------- Выход
     def evaluate_exit(
         self, position: Position, context: FilterContext
     ) -> TradeSignal | None:
@@ -500,29 +465,6 @@ class MomentumPumpStrategy(BaseStrategy):
                 f"первый тейк-профит: PnL={pnl_pct:.2f}% >= {tp1:.1f}%",
             )
         return None
-
-    def _dip_threshold(self, pool: object) -> float:
-        """Порог отката: доля стоп-лосса уровня пула (по объёму на входе).
-
-        Args:
-            pool: Снимок пула.
-
-        Returns:
-            Порог снижения в % для выбранного режима свечей.
-        """
-        volume = getattr(pool, "volume_sol", 0.0)
-        if volume >= self._hot_volume_sol:
-            base_stop = self._hard_stop_hot_pct
-        elif volume >= self._cold_volume_sol:
-            base_stop = self._hard_stop_loss_pct
-        else:
-            base_stop = self._hard_stop_cold_pct
-        factor = {
-            "1s": settings.dip_factor_1s,
-            "15s": settings.dip_factor_15s,
-            "60s": settings.dip_factor_60s,
-        }.get(settings.entry_dip_mode, settings.dip_factor_1s)
-        return base_stop * factor
 
     def _is_hot_pool(self, pool: object) -> bool:
         """«Горячий» пул: объём торгов с отслеживания >= порога.
