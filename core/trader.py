@@ -141,6 +141,7 @@ class MomentumTrader:
         token_reliable_seconds: float | None = None,
         max_entries_per_mint: int | None = None,
         reentry_cooldown_seconds: float | None = None,
+        min_volume_sol: float | None = None,
     ) -> None:
         """Инициализирует движок решений.
 
@@ -165,6 +166,8 @@ class MomentumTrader:
                 (вход + усреднения; ``None`` — из настроек).
             reentry_cooldown_seconds: Пауза после закрытия сделки по mint
                 перед новым входом, c (``None`` — из настроек).
+            min_volume_sol: Минимальный накопленный объём торгов пула для
+                входа, SOL (``None`` — из настроек).
         """
         self._executor = executor
         self._portfolio = portfolio if portfolio is not None else PortfolioManager()
@@ -217,10 +220,16 @@ class MomentumTrader:
             if reentry_cooldown_seconds is None
             else reentry_cooldown_seconds
         )
+        self._min_volume_sol = (
+            settings.min_volume_sol if min_volume_sol is None else min_volume_sol
+        )
         self._blocked_until: dict[str, float] = {}
         self._position_locks: dict[str, asyncio.Lock] = {}
         # Свечной агрегатор по пулам (детект отката для входа).
         self._candles: dict[str, CandleBuilder] = {}
+        # Накопленный объём по пулам из потока событий (для volume-гейта
+        # и уровней тейков): единый источник для live и бэктеста.
+        self._pool_volume: dict[str, float] = {}
         self._dip_timeframe = DIP_TIMEFRAMES.get(
             settings.entry_dip_mode, DIP_TIMEFRAMES["1s"]
         )
@@ -289,6 +298,15 @@ class MomentumTrader:
             builder = CandleBuilder(self._dip_timeframe)
             self._candles[event.pool_address] = builder
         builder.add(event)
+
+        # Накопленный объём: база = max(значение снапшота, свой счётчик),
+        # чтобы не терять объём, пришедший из listener'а.
+        vol = max(
+            self._pool_volume.get(event.pool_address, 0.0),
+            pool.volume_sol,
+        ) + event.sol_amount
+        self._pool_volume[event.pool_address] = vol
+        pool = pool.model_copy(update={"volume_sol": vol})
 
         position = self._portfolio.get(event.base_mint)
         if position is None:

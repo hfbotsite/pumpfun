@@ -453,3 +453,38 @@ class TestTieredHardStop:
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
         assert signal is not None
         assert signal.exit_reason.value == "hard_stop_loss"
+
+
+class TestMinVolumeGate:
+    """Объёмный фильтр: вход запрещён до набора объёма."""
+
+    def test_low_volume_blocked(self) -> None:
+        """Объём 20 SOL (< 30) — HOLD, токен под мониторингом."""
+        strategy = MomentumPumpStrategy(min_volume_sol=30.0)
+        ctx = replace(
+            make_entry_context(),
+            pool=make_pool(volume_sol=20.0),
+        )
+        signal = strategy.evaluate_entry(ctx)
+        assert signal.action.value == "hold"
+        assert "объём торгов" in signal.reason
+
+    def test_volume_reached_enters(self) -> None:
+        """Объём 40 SOL (>= 30) — гейт пропускает (дальше momentum-гейты)."""
+        strategy = MomentumPumpStrategy(min_volume_sol=30.0)
+        ctx = replace(
+            make_entry_context(),
+            pool=make_pool(volume_sol=40.0),
+        )
+        signal = strategy.evaluate_entry(ctx)
+        assert signal.action.value == "enter"
+
+    def test_average_not_blocked(self) -> None:
+        """Усреднение объёмным фильтром не блокируется (пул уже торгуется)."""
+        strategy = MomentumPumpStrategy(min_volume_sol=30.0)
+        ctx = replace(
+            make_entry_context(dip_pct=99.0, is_average=True),
+            pool=make_pool(volume_sol=5.0),
+        )
+        signal = strategy.evaluate_entry(ctx)
+        assert signal.action.value == "enter"

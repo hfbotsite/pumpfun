@@ -213,6 +213,13 @@ class Settings(BaseSettings):
             "кит-ордером, сформировавшим сигнал."
         ),
     )
+    min_volume_sol: float = Field(
+        default=30.0, ge=0,
+        description=(
+            "Минимальный накопленный объём торгов пула, SOL, для входа "
+            "(токен мониторится, вход разрешён по достижении порога)."
+        ),
+    )
     entry_dip_mode: str = Field(
         default="1s",
         description=(

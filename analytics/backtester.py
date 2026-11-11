@@ -328,6 +328,9 @@ class Backtester:
         self._was_cancelled = False
         self._strategy_kwargs = dict(strategy_kwargs or {})
         self._trader_kwargs = dict(trader_kwargs or {})
+        # В реплее объём считается только по поданным событиям (история
+        # частична) — volume-гейт по умолчанию отключён.
+        self._strategy_kwargs.setdefault("min_volume_sol", 0.0)
 
     # --------------------------------------------------------------- Свойства
     @property

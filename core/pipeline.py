@@ -693,6 +693,7 @@ class LivePipeline:
     # ------------------------------------------------------- Воронка причин HOLD
     _HOLD_REASON_BUCKETS: tuple[tuple[str, str], ...] = (
         ("надёжности", "окно надёжности"),
+        ("объём торгов", "объём торгов ниже минимума"),
         ("ликвидн", "ликвидность (MIN_REAL_POOL_SOL)"),
         ("volume velocity", "низкая Volume Velocity"),
         ("buy/sell", "низкий Buy/Sell Ratio"),

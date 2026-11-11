@@ -126,7 +126,7 @@ class TestTokenReliabilityGate:
         """Токен старше окна — вход проходит."""
         executor = ManualExecutor()
         trader = make_fresh_trader(executor, token_reliable_seconds=60.0)
-        pool = make_pool(created_at=900.0)
+        pool = make_pool(created_at=900.0, volume_sol=100.0)
         decision = await trader.process_event(
             hot_event(timestamp=1000.0), pool
         )
@@ -138,7 +138,7 @@ class TestTokenReliabilityGate:
         """created_at=0 (возраст неизвестен) — гейт не блокирует."""
         executor = ManualExecutor()
         trader = make_fresh_trader(executor, token_reliable_seconds=60.0)
-        pool = make_pool(created_at=0.0)
+        pool = make_pool(created_at=0.0, volume_sol=100.0)
         decision = await trader.process_event(
             hot_event(timestamp=1000.0), pool
         )
@@ -189,7 +189,7 @@ class TestAutoAverage:
             token_reliable_seconds=60.0,
         )
         self.open_position(trader)
-        pool = make_pool(created_at=900.0)
+        pool = make_pool(created_at=900.0, volume_sol=100.0)
         decision = await trader.process_event(
             hot_event(timestamp=1000.0), pool
         )
@@ -212,7 +212,7 @@ class TestAutoAverage:
             max_entries_per_mint=2,
         )
         self.open_position(trader, entries_count=2)
-        pool = make_pool(created_at=900.0)
+        pool = make_pool(created_at=900.0, volume_sol=100.0)
         decision = await trader.process_event(
             hot_event(timestamp=1000.0), pool
         )
@@ -234,7 +234,7 @@ class TestAutoAverage:
             trade_amount_sol=0.5,
         )
         self.open_position(trader)
-        pool = make_pool(created_at=900.0)
+        pool = make_pool(created_at=900.0, volume_sol=100.0)
         decision = await trader.process_event(
             hot_event(timestamp=1000.0), pool
         )
@@ -491,7 +491,7 @@ class TestAverageOnlyInProfit:
             trade_amount_sol=0.5,
         )
         self.open_pos(trader)
-        pool = make_pool(created_at=900.0)
+        pool = make_pool(created_at=900.0, volume_sol=100.0)
         # Цена события 2.0/500000 = 4e-6 < входа 5e-6.
         await trader.process_event(
             make_event(sol_amount=2.0, token_amount=500_000, timestamp=1000.0),
@@ -517,7 +517,7 @@ class TestAverageOnlyInProfit:
             trade_amount_sol=0.5,
         )
         self.open_pos(trader)
-        pool = make_pool(created_at=900.0)
+        pool = make_pool(created_at=900.0, volume_sol=100.0)
         await trader.process_event(hot_event(timestamp=1000.0), pool)
         position = trader.portfolio.get(BASE_MINT)
         assert position is not None
@@ -531,7 +531,7 @@ class TestReentryCooldown:
         """Вход через 2 c после закрытия — HOLD (куладаун 5 c)."""
         executor = ManualExecutor()
         trader = make_fresh_trader(executor, reentry_cooldown_seconds=5.0)
-        pool = make_pool(created_at=900.0)
+        pool = make_pool(created_at=900.0, volume_sol=100.0)
         # Вход + закрытие (force_close фиксирует closed_at=1000).
         await trader.process_event(hot_event(timestamp=1000.0), pool)
         trader.portfolio.force_close(
@@ -548,7 +548,7 @@ class TestReentryCooldown:
         """Вход после истечения кулдауна — разрешён."""
         executor = ManualExecutor()
         trader = make_fresh_trader(executor, reentry_cooldown_seconds=5.0)
-        pool = make_pool(created_at=900.0)
+        pool = make_pool(created_at=900.0, volume_sol=100.0)
         await trader.process_event(hot_event(timestamp=1000.0), pool)
         trader.portfolio.force_close(
             BASE_MINT, exit_price=5e-6, closed_at=1000.0

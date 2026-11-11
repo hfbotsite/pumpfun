@@ -90,6 +90,7 @@ class MomentumPumpStrategy(BaseStrategy):
         hard_stop_loss_pct: float | None = None,
         hard_stop_cold_pct: float | None = None,
         hard_stop_hot_pct: float | None = None,
+        min_volume_sol: float | None = None,
         exit_ratio_threshold: float | None = None,
         exhaustion_grace_seconds: float | None = None,
         large_sell_sol: float | None = None,
@@ -243,6 +244,9 @@ class MomentumPumpStrategy(BaseStrategy):
             if hard_stop_hot_pct is None
             else hard_stop_hot_pct
         )
+        self._min_volume_sol = (
+            settings.min_volume_sol if min_volume_sol is None else min_volume_sol
+        )
         self._exit_ratio_threshold = (
             settings.exit_ratio_threshold
             if exit_ratio_threshold is None
@@ -309,6 +313,15 @@ class MomentumPumpStrategy(BaseStrategy):
             return self._evaluate_average(context)
 
         # --- Новый вход: momentum на росте цены --------------------------
+        # Объёмный фильтр: мониторим токен, входим по достижении объёма.
+        volume = getattr(context.pool, "volume_sol", 0.0)
+        if volume < self._min_volume_sol:
+            return self._hold_signal(
+                context,
+                f"объём торгов {volume:.1f} SOL < минимума "
+                f"{self._min_volume_sol:.0f} SOL (токен под мониторингом)",
+            )
+
         # Защита от погони: покупка хвоста волны обычно убыточна.
         gain = metrics.window_price_gain_pct
         if gain > self._max_entry_price_gain_pct:
