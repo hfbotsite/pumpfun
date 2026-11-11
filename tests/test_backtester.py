@@ -62,11 +62,6 @@ def build_pump_events() -> list[TradeEvent]:
         events.append(
             _event(TradeSide.BUY, 0.6, 4_000_000, timestamp, f"seed-{index}")
         )
-    # Откат: продажа в ту же 1-секундную свечу — красная свеча с телом
-    # ~4.7% >= порога (dip-вход), но выше стопа 8%.
-    events.append(
-        _event(TradeSide.SELL, 0.2, 1_400_000, 1.7, "dip-0")
-    )
     # Крупные покупки: цена события (sol/token) растёт ступенями, чтобы
     # достичь TP1 (+30%) и TP2 (+50%) на пуле с виртуальным резервом 90 SOL.
     push_tokens = (36_000_000, 30_000_000, 25_000_000)

@@ -521,7 +521,9 @@ class MomentumTrader:
             pool.pool_address, self._entry_window_seconds, now=event.timestamp
         )
         security = await self._security_provider(pool)
-        context = self._build_context(pool, metrics, security, event.timestamp)
+        context = self._build_context(
+            pool, metrics, security, event.timestamp, is_average=True
+        )
         signal = self._strategy.evaluate_entry(context)
         if signal.action != SignalAction.ENTER:
             return None
@@ -665,6 +667,8 @@ class MomentumTrader:
         metrics: MomentumMetrics,
         security: TokenSecurity | None,
         timestamp: float,
+        *,
+        is_average: bool = False,
     ) -> FilterContext:
         """Собирает контекст фильтрации для стратегии.
 
@@ -686,6 +690,7 @@ class MomentumTrader:
             metrics=metrics,
             timestamp=timestamp if timestamp > 0 else time.time(),
             dip_pct=dip,
+            is_average=is_average,
         )
 
     def _block_for(self, pool_address: str, now: float) -> None:

@@ -279,15 +279,15 @@ class MomentumPumpStrategy(BaseStrategy):
 
     # ------------------------------------------------------------- Вход
     def evaluate_entry(self, context: FilterContext) -> TradeSignal:
-        """Принимает решение о входе по откату на свечном таймфрейме.
+        """Принимает решение по контексту: вход или усреднение.
 
-        Стратегия «buy the dip»: после окна входа наблюдаём за свечами
-        (``ENTRY_DIP_MODE``: 1s — 1 красная, 15s — 2 подряд красные,
-        60s — 3 подряд красные) и входим/усредняемся, когда суммарное
-        снижение тел достигает доли стоп-лосса уровня пула
-        (продолжение движения после отката).
-
-        Порядок: цепочка фильтров (ликвидность, безопасность) -> dip-гейт.
+        * **Новый вход** (``is_average=False``): momentum-вход на росте —
+          фильтры -> погоня за ценой -> минимум покупок -> velocity
+          (усиленный для холодных пулов) -> Buy/Sell Ratio.
+        * **Усреднение** (``is_average=True``): стратегия «buy the dip» —
+          вход по откату на свечном таймфрейме (``ENTRY_DIP_MODE``),
+          порог = доля стоп-лосса уровня пула; докупки в минус
+          дополнительно отсечены ``AVERAGE_ONLY_IN_PROFIT`` в движке.
 
         Args:
             context: Контекст с пулом, метриками и глубиной отката.
@@ -305,6 +305,64 @@ class MomentumPumpStrategy(BaseStrategy):
                     context, f"{result.filter_name}: {result.reason}"
                 )
 
+        if context.is_average:
+            return self._evaluate_average(context)
+
+        # --- Новый вход: momentum на росте цены --------------------------
+        # Защита от погони: покупка хвоста волны обычно убыточна.
+        gain = metrics.window_price_gain_pct
+        if gain > self._max_entry_price_gain_pct:
+            return self._hold_signal(
+                context,
+                f"погоня за ценой: рост {gain:.1f}% за окно "
+                f"> {self._max_entry_price_gain_pct:.0f}%",
+            )
+
+        if metrics.buy_count < self._min_entry_buy_count:
+            return self._hold_signal(
+                context,
+                f"мало покупок в окне: {metrics.buy_count} "
+                f"< {self._min_entry_buy_count} (вход за одним китом)",
+            )
+
+        # Холодный пул (тонкий токен): микроволна там чаще ложная —
+        # требуем усиленный объём покупок, иначе мгновенный слив.
+        velocity_threshold = self._volume_velocity_threshold
+        if not self._is_hot_pool(context.pool):
+            volume = getattr(context.pool, "volume_sol", 0.0)
+            if volume < settings.cold_volume_sol:
+                velocity_threshold = self._volume_velocity_cold_threshold
+        velocity = metrics.volume_velocity_sol
+        if velocity < velocity_threshold:
+            return self._hold_signal(
+                context,
+                f"низкая Volume Velocity {velocity:.3f} < "
+                f"{velocity_threshold:.2f} SOL (окно {metrics.window_seconds:.1f}s)",
+            )
+
+        ratio = metrics.buy_sell_ratio
+        if ratio < self._buy_sell_ratio_threshold:
+            return self._hold_signal(
+                context,
+                "низкий Buy/Sell Ratio "
+                f"{ratio:.3f} < {self._buy_sell_ratio_threshold:.2f}",
+            )
+
+        return self._enter_signal(
+            context,
+            "импульс покупок: "
+            f"ratio={ratio:.3f}, velocity={velocity:.3f} SOL/{metrics.window_seconds:.1f}s",
+        )
+
+    def _evaluate_average(self, context: FilterContext) -> TradeSignal:
+        """Dip-гейт усреднения: откат на свечном таймфрейме.
+
+        Args:
+            context: Контекст актива (``dip_pct`` от строителя свечей).
+
+        Returns:
+            ``ENTER`` при достижении порога отката, иначе ``HOLD``.
+        """
         dip = context.dip_pct
         if dip is None:
             return self._hold_signal(
@@ -318,10 +376,9 @@ class MomentumPumpStrategy(BaseStrategy):
                 f"нет отката: dip {dip:.2f}% < {threshold:.2f}% "
                 f"(режим {settings.entry_dip_mode})",
             )
-
         return self._enter_signal(
             context,
-            f"вход на откате: dip {dip:.2f}% >= {threshold:.2f}% "
+            f"усреднение на откате: dip {dip:.2f}% >= {threshold:.2f}% "
             f"(режим {settings.entry_dip_mode})",
         )
 
@@ -442,11 +499,11 @@ class MomentumPumpStrategy(BaseStrategy):
         """
         volume = getattr(pool, "volume_sol", 0.0)
         if volume >= self._hot_volume_sol:
-            base_stop = settings.hard_stop_hot_pct
+            base_stop = self._hard_stop_hot_pct
         elif volume >= self._cold_volume_sol:
-            base_stop = settings.hard_stop_loss_pct
+            base_stop = self._hard_stop_loss_pct
         else:
-            base_stop = settings.hard_stop_cold_pct
+            base_stop = self._hard_stop_cold_pct
         factor = {
             "1s": settings.dip_factor_1s,
             "15s": settings.dip_factor_15s,

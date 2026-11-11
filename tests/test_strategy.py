@@ -37,6 +37,7 @@ def hot_metrics(**overrides) -> MomentumMetrics:
 def make_entry_context(
     metrics: MomentumMetrics | None = None,
     dip_pct: float | None = None,
+    is_average: bool = False,
 ) -> FilterContext:
     """Контекст входа: хороший пул, чистый контракт, горячие метрики."""
     return FilterContext(
@@ -46,6 +47,7 @@ def make_entry_context(
         metrics=metrics if metrics is not None else hot_metrics(),
         timestamp=1000.0,
         dip_pct=dip_pct,
+        is_average=is_average,
     )
 
 
@@ -64,25 +66,31 @@ def make_exit_context(
 
 
 class TestDipEntry:
-    """Вход на откате (dip): порог = доля стопа уровня пула."""
+    """Усреднение на откате (dip): порог = доля стопа уровня пула."""
 
     def test_dip_enters(self) -> None:
         """Откат глубже порога — вход."""
         strategy = MomentumPumpStrategy(hard_stop_cold_pct=8.0)
-        signal = strategy.evaluate_entry(make_entry_context(dip_pct=3.0))
+        signal = strategy.evaluate_entry(
+            make_entry_context(dip_pct=3.0, is_average=True)
+        )
         assert signal.action.value == "enter"
 
     def test_dip_below_threshold_holds(self) -> None:
         """Откат мельче порога — удержание."""
         strategy = MomentumPumpStrategy(hard_stop_cold_pct=8.0)
-        signal = strategy.evaluate_entry(make_entry_context(dip_pct=1.0))
+        signal = strategy.evaluate_entry(
+            make_entry_context(dip_pct=1.0, is_average=True)
+        )
         assert signal.action.value == "hold"
         assert "нет отката" in signal.reason
 
     def test_no_candle_data_holds(self) -> None:
         """Свечи ещё не набраны — удержание."""
         strategy = MomentumPumpStrategy()
-        signal = strategy.evaluate_entry(make_entry_context(dip_pct=None))
+        signal = strategy.evaluate_entry(
+            make_entry_context(dip_pct=None, is_average=True)
+        )
         assert signal.action.value == "hold"
         assert "мало данных свечей" in signal.reason
 
@@ -95,16 +103,20 @@ class TestDipEntry:
         )
         # cold (объём 0): порог 8×0.33=2.64
         assert (
-            strategy.evaluate_entry(make_entry_context(dip_pct=3.0)).action.value
+            strategy.evaluate_entry(
+                make_entry_context(dip_pct=3.0, is_average=True)
+            ).action.value
             == "enter"
         )
         assert (
-            strategy.evaluate_entry(make_entry_context(dip_pct=2.0)).action.value
+            strategy.evaluate_entry(
+                make_entry_context(dip_pct=2.0, is_average=True)
+            ).action.value
             == "hold"
         )
         # hot (объём 500): порог 50×0.33=16.5
         hot_ctx = replace(
-            make_entry_context(dip_pct=17.0),
+            make_entry_context(dip_pct=17.0, is_average=True),
             pool=make_pool(volume_sol=500.0),
             dip_pct=17.0,
         )
