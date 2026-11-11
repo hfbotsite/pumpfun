@@ -69,6 +69,21 @@ class AlwaysEnterStrategy(MomentumPumpStrategy):
         return ENTER_SIGNAL
 
 
+def dip_pair_events(timestamp: float = 1000.0) -> list[object]:
+    """Пара событий для dip-входа: открытие свечи 5e-6, снижение до 4e-6.
+
+    Args:
+        timestamp: Unix ts первого события (второе +0.5 c, тот же бакет 1s).
+
+    Returns:
+        Список из двух :class:`TradeEvent`.
+    """
+    return [
+        make_event(sol_amount=0.5, token_amount=100_000, timestamp=timestamp),
+        make_event(sol_amount=0.4, token_amount=100_000, timestamp=timestamp + 0.5),
+    ]
+
+
 def make_fresh_trader(
     executor: ManualExecutor, **kwargs: Any
 ) -> MomentumTrader:
@@ -112,9 +127,8 @@ class TestTokenReliabilityGate:
         executor = ManualExecutor()
         trader = make_fresh_trader(executor, token_reliable_seconds=60.0)
         pool = make_pool(created_at=900.0)
-        decision = await trader.process_event(
-            hot_event(timestamp=1000.0), pool
-        )
+        for ev in dip_pair_events(timestamp=1000.0):
+            decision = await trader.process_event(ev, pool)
         assert decision.action is SignalAction.ENTER
         assert trader.portfolio.open_count == 1
         assert len(executor.buy_orders) == 1
@@ -124,9 +138,8 @@ class TestTokenReliabilityGate:
         executor = ManualExecutor()
         trader = make_fresh_trader(executor, token_reliable_seconds=60.0)
         pool = make_pool(created_at=0.0)
-        decision = await trader.process_event(
-            hot_event(timestamp=1000.0), pool
-        )
+        for ev in dip_pair_events(timestamp=1000.0):
+            decision = await trader.process_event(ev, pool)
         assert decision.action is SignalAction.ENTER
 
 
@@ -361,7 +374,8 @@ class TestTieredStopLoss:
             trade_amount_sol=0.5,
         )
         pool = make_pool(volume_sol=500.0, created_at=900.0)
-        await trader.process_event(hot_event(timestamp=1000.0), pool)
+        for ev in dip_pair_events(timestamp=1000.0):
+            await trader.process_event(ev, pool)
         position = trader.portfolio.get(BASE_MINT)
         assert position is not None
         expected = _settings.hard_stop_hot_pct
@@ -518,12 +532,13 @@ class TestReentryCooldown:
         trader = make_fresh_trader(executor, reentry_cooldown_seconds=5.0)
         pool = make_pool(created_at=900.0)
         # Вход + закрытие (force_close фиксирует closed_at=1000).
-        await trader.process_event(hot_event(timestamp=1000.0), pool)
+        for ev in dip_pair_events(timestamp=1000.0):
+            await trader.process_event(ev, pool)
         trader.portfolio.force_close(
             BASE_MINT, exit_price=5e-6, closed_at=1000.0
         )
         decision = await trader.process_event(
-            hot_event(timestamp=1002.0), pool
+            dip_pair_events(timestamp=1002.0)[0], pool
         )
         assert decision.action is SignalAction.HOLD
         assert "куладаун повторного входа" in decision.reason
@@ -534,12 +549,13 @@ class TestReentryCooldown:
         executor = ManualExecutor()
         trader = make_fresh_trader(executor, reentry_cooldown_seconds=5.0)
         pool = make_pool(created_at=900.0)
-        await trader.process_event(hot_event(timestamp=1000.0), pool)
+        for ev in dip_pair_events(timestamp=1000.0):
+            await trader.process_event(ev, pool)
         trader.portfolio.force_close(
             BASE_MINT, exit_price=5e-6, closed_at=1000.0
         )
-        decision = await trader.process_event(
-            hot_event(timestamp=1006.0), pool
-        )
-        assert decision.action is SignalAction.ENTER
+        decision = None
+        for ev in dip_pair_events(timestamp=1006.0):
+            decision = await trader.process_event(ev, pool)
+        assert decision is not None and decision.action is SignalAction.ENTER
         assert trader.portfolio.open_count == 1

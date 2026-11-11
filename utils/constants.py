@@ -120,7 +120,7 @@ JITO_TIP_ACCOUNTS: tuple[str, ...] = (
 RAYDIUM_FEE_BPS: int = 25
 
 #: Комиссия Pump.fun bonding curve (100 bps = 1.0%).
-PUMP_FUN_FEE_BPS: int = 100
+PUMP_FUN_FEE_BPS: int = 125
 
 #: Базисная точка (1 bps = 0.01%).
 BPS_DENOMINATOR: int = 10_000

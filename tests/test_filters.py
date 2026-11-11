@@ -102,9 +102,9 @@ class TestFeeModel:
     """Комиссии по стадии жизни токена (bonding curve vs PumpSwap AMM)."""
 
     def test_curve_fee_is_100_bps(self) -> None:
-        """Bonding curve — 1%."""
+        """Bonding curve — 1.25%."""
         pool = make_pool()
-        assert pool_fee_bps(pool) == 100
+        assert pool_fee_bps(pool) == 125
 
     def test_pumpswap_amm_fee_is_125_bps(self) -> None:
         """PumpSwap AMM — 125 bps (консервативно к Dynamic Fees V1)."""

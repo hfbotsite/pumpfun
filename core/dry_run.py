@@ -24,6 +24,7 @@ from typing import Self
 
 from config.settings import LAMPORTS_PER_SOL
 from core.executor import BuyOrder, SellOrder
+from filters.liquidity_guard import pool_fee_bps
 from models.trade_data import OrderResult, TradeSide
 from utils.latency import LatencyRegistry, now_us
 from utils.logger import get_logger
@@ -140,7 +141,11 @@ class DryRunExecutor:
         """
         decimals = order.pool.base_decimals
         sol_amount = order.sol_amount_lamports / LAMPORTS_PER_SOL
-        token_amount = order.expected_tokens / float(10**decimals)
+        # Комиссия площадки (1.25% на кривой Pump.fun) вычитается из SOL
+        # входа: токенов за те же деньги приходит меньше — честная
+        # статистика вместо бумажного брейк-евена.
+        fee_mult = 1.0 - pool_fee_bps(order.pool) / 10_000.0
+        token_amount = order.expected_tokens * fee_mult / float(10**decimals)
         if sol_amount <= 0 or token_amount <= 0:
             self.stats.rejected += 1
             logger.warning(
@@ -195,7 +200,9 @@ class DryRunExecutor:
         """
         decimals = order.pool.base_decimals
         token_amount = order.token_amount / float(10**decimals)
-        sol_amount = order.quote.amount_out / LAMPORTS_PER_SOL
+        # Комиссия площадки вычитается из получаемого SOL.
+        fee_mult = 1.0 - pool_fee_bps(order.pool) / 10_000.0
+        sol_amount = order.quote.amount_out * fee_mult / LAMPORTS_PER_SOL
         if sol_amount <= 0 or token_amount <= 0:
             self.stats.rejected += 1
             logger.warning(

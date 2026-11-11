@@ -36,6 +36,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
+from analytics.candles import DIP_TIMEFRAMES, CandleBuilder
 from analytics.indicators import StreamingIndicators
 from config.settings import settings
 from core.orders import (
@@ -218,6 +219,11 @@ class MomentumTrader:
         )
         self._blocked_until: dict[str, float] = {}
         self._position_locks: dict[str, asyncio.Lock] = {}
+        # Свечной агрегатор по пулам (детект отката для входа).
+        self._candles: dict[str, CandleBuilder] = {}
+        self._dip_timeframe = DIP_TIMEFRAMES.get(
+            settings.entry_dip_mode, DIP_TIMEFRAMES["1s"]
+        )
 
     #: Окно, в котором клик по только что закрытой позиции считает
     #: «уже закрыто», а не ошибкой (снимок дашборда отстаёт на интервал SSE).
@@ -278,6 +284,11 @@ class MomentumTrader:
             :class:`TradeDecision` с действием, сигналом и результатом ордера.
         """
         self._indicators.record(event)
+        builder = self._candles.get(event.pool_address)
+        if builder is None:
+            builder = CandleBuilder(self._dip_timeframe)
+            self._candles[event.pool_address] = builder
+        builder.add(event)
 
         position = self._portfolio.get(event.base_mint)
         if position is None:
@@ -666,12 +677,15 @@ class MomentumTrader:
         Returns:
             :class:`~filters.base_filter.FilterContext`.
         """
+        builder = self._candles.get(pool.pool_address)
+        dip = builder.dip_pct(settings.entry_dip_mode) if builder else None
         return FilterContext(
             pool=pool,
             trade_amount_sol=self._trade_amount_sol,
             security=security,
             metrics=metrics,
             timestamp=timestamp if timestamp > 0 else time.time(),
+            dip_pct=dip,
         )
 
     def _block_for(self, pool_address: str, now: float) -> None:

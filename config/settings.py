@@ -213,6 +213,25 @@ class Settings(BaseSettings):
             "кит-ордером, сформировавшим сигнал."
         ),
     )
+    entry_dip_mode: str = Field(
+        default="1s",
+        description=(
+            "Режим детекции отката для входа: 1s (1 красная свеча), "
+            "15s (2 подряд красные), 60s (3 подряд красные)."
+        ),
+    )
+    dip_factor_1s: float = Field(
+        default=0.33, gt=0, le=1,
+        description="Порог отката 1s-режима: доля стоп-лосса уровня пула.",
+    )
+    dip_factor_15s: float = Field(
+        default=0.25, gt=0, le=1,
+        description="Порог отката 15s-режима: доля стоп-лосса уровня пула.",
+    )
+    dip_factor_60s: float = Field(
+        default=0.20, gt=0, le=1,
+        description="Порог отката 60s-режима: доля стоп-лосса уровня пула.",
+    )
     max_entry_price_gain_pct: float = Field(
         default=20.0, gt=0,
         description=(

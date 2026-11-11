@@ -40,6 +40,8 @@ class FilterContext:
     security: TokenSecurity | None = None
     metrics: MomentumMetrics | None = None
     timestamp: float = field(default_factory=time.time)
+    #: Глубина отката на выбранном таймфрейме, % (``None`` — мало данных свечей).
+    dip_pct: float | None = None
 
     @property
     def base_mint(self) -> str:

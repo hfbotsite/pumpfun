@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from config.settings import settings
@@ -32,7 +34,10 @@ def hot_metrics(**overrides) -> MomentumMetrics:
     return MomentumMetrics(**fields)
 
 
-def make_entry_context(metrics: MomentumMetrics | None = None) -> FilterContext:
+def make_entry_context(
+    metrics: MomentumMetrics | None = None,
+    dip_pct: float | None = None,
+) -> FilterContext:
     """Контекст входа: хороший пул, чистый контракт, горячие метрики."""
     return FilterContext(
         pool=make_pool(),
@@ -40,6 +45,7 @@ def make_entry_context(metrics: MomentumMetrics | None = None) -> FilterContext:
         security=clean_security(),
         metrics=metrics if metrics is not None else hot_metrics(),
         timestamp=1000.0,
+        dip_pct=dip_pct,
     )
 
 
@@ -57,68 +63,54 @@ def make_exit_context(
     )
 
 
-class TestEntry:
-    """Вход по импульсу: фильтры, ratio, velocity."""
+class TestDipEntry:
+    """Вход на откате (dip): порог = доля стопа уровня пула."""
 
-    def test_hot_momentum_enters(self) -> None:
-        """Ratio 0.8 + velocity 2.5 SOL дают ENTER."""
-        strategy = MomentumPumpStrategy()
-        signal = strategy.evaluate_entry(make_entry_context())
+    def test_dip_enters(self) -> None:
+        """Откат глубже порога — вход."""
+        strategy = MomentumPumpStrategy(hard_stop_cold_pct=8.0)
+        signal = strategy.evaluate_entry(make_entry_context(dip_pct=3.0))
         assert signal.action.value == "enter"
-        assert "ratio" in signal.reason
 
-    def test_low_ratio_holds(self) -> None:
-        """Ratio ниже 0.70 — HOLD даже при горячем объёме."""
-        metrics = hot_metrics(buy_count=4, sell_count=6, buy_volume_sol=2.5)
-        strategy = MomentumPumpStrategy()
-        signal = strategy.evaluate_entry(make_entry_context(metrics))
+    def test_dip_below_threshold_holds(self) -> None:
+        """Откат мельче порога — удержание."""
+        strategy = MomentumPumpStrategy(hard_stop_cold_pct=8.0)
+        signal = strategy.evaluate_entry(make_entry_context(dip_pct=1.0))
         assert signal.action.value == "hold"
-        assert "ratio" in signal.reason.lower()
+        assert "нет отката" in signal.reason
 
-    def test_low_velocity_holds(self) -> None:
-        """Velocity ниже 1.5 SOL — HOLD при хорошем ratio."""
-        metrics = hot_metrics(buy_volume_sol=0.5)
+    def test_no_candle_data_holds(self) -> None:
+        """Свечи ещё не набраны — удержание."""
         strategy = MomentumPumpStrategy()
-        signal = strategy.evaluate_entry(make_entry_context(metrics))
+        signal = strategy.evaluate_entry(make_entry_context(dip_pct=None))
         assert signal.action.value == "hold"
-        assert "velocity" in signal.reason.lower()
+        assert "мало данных свечей" in signal.reason
 
-    def test_no_metrics_holds(self) -> None:
-        """Без метрик решения нет."""
-        strategy = MomentumPumpStrategy()
-        context = FilterContext(
-            pool=make_pool(),
-            trade_amount_sol=0.5,
-            security=clean_security(),
-            metrics=None,
-            timestamp=1000.0,
-        )
-        signal = strategy.evaluate_entry(context)
-        assert signal.action.value == "hold"
-        assert "метрики" in signal.reason.lower()
-
-    def test_failed_filter_holds(self) -> None:
-        """Отказ цепочки фильтров блокирует вход даже на горячем импульсе."""
-        poor_pool = make_pool(quote_reserve=5_000_000_000)
-        context = FilterContext(
-            pool=poor_pool,
-            trade_amount_sol=0.5,
-            security=clean_security(),
-            metrics=hot_metrics(),
-            timestamp=1000.0,
-        )
-        strategy = MomentumPumpStrategy()
-        signal = strategy.evaluate_entry(context)
-        assert signal.action.value == "hold"
-        assert "liquidity_guard" in signal.reason
-
-    def test_explicit_thresholds_override(self) -> None:
-        """Явные пороги стратегии перекрывают настройки окружения."""
+    def test_tier_thresholds(self) -> None:
+        """Порог масштабируется стопом уровня пула (×0.33)."""
         strategy = MomentumPumpStrategy(
-            buy_sell_ratio_threshold=0.95, volume_velocity_threshold=10.0
+            hard_stop_cold_pct=8.0,
+            hard_stop_loss_pct=40.0,
+            hard_stop_hot_pct=50.0,
         )
-        signal = strategy.evaluate_entry(make_entry_context())
-        assert signal.action.value == "hold"
+        # cold (объём 0): порог 8×0.33=2.64
+        assert (
+            strategy.evaluate_entry(make_entry_context(dip_pct=3.0)).action.value
+            == "enter"
+        )
+        assert (
+            strategy.evaluate_entry(make_entry_context(dip_pct=2.0)).action.value
+            == "hold"
+        )
+        # hot (объём 500): порог 50×0.33=16.5
+        hot_ctx = replace(
+            make_entry_context(dip_pct=17.0),
+            pool=make_pool(volume_sol=500.0),
+            dip_pct=17.0,
+        )
+        assert strategy.evaluate_entry(hot_ctx).action.value == "enter"
+        hot_low = replace(hot_ctx, dip_pct=10.0)
+        assert strategy.evaluate_entry(hot_low).action.value == "hold"
 
 
 class TestExitHardStop:
@@ -288,37 +280,6 @@ def test_position_factories_agree() -> None:
     assert position.pool_address == POOL_ADDRESS
 
 
-class TestEntryGuards:
-    """Защита от погони и минимум покупок в окне входа."""
-
-    def test_chase_blocked_on_price_spike(self) -> None:
-        """Рост цены > 30% за окно — вход запрещён (покупка хвоста волны)."""
-        strategy = MomentumPumpStrategy()
-        metrics = hot_metrics(
-            buy_count=6, last_price=5e-9, first_price=3e-9  # рост +67%
-        )
-        signal = strategy.evaluate_entry(make_entry_context(metrics))
-        assert signal.action.value == "hold"
-        assert "погоня за ценой" in signal.reason
-
-    def test_moderate_growth_enters(self) -> None:
-        """Рост в пределах порога (+25% при пороге 30) — вход разрешён."""
-        strategy = MomentumPumpStrategy(max_entry_price_gain_pct=30.0)
-        metrics = hot_metrics(
-            buy_count=8, last_price=5e-9, first_price=4e-9  # рост +25%
-        )
-        signal = strategy.evaluate_entry(make_entry_context(metrics))
-        assert signal.action.value == "enter"
-
-    def test_single_whale_buy_blocked(self) -> None:
-        """Одна кит-покупка в окне (buy_count < 3) — вход запрещён."""
-        strategy = MomentumPumpStrategy()
-        metrics = hot_metrics(buy_count=1, buy_volume_sol=2.5)
-        signal = strategy.evaluate_entry(make_entry_context(metrics))
-        assert signal.action.value == "hold"
-        assert "мало покупок" in signal.reason
-
-
 class TestExhaustionGrace:
     """Grace-period: затухание не срабатывает сразу после входа."""
 
@@ -480,43 +441,3 @@ class TestTieredHardStop:
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
         assert signal is not None
         assert signal.exit_reason.value == "hard_stop_loss"
-
-
-class TestColdVelocityGate:
-    """Холодным пулам (< cold_volume_sol) — усиленный порог velocity."""
-
-    def test_cold_pool_requires_stronger_velocity(self) -> None:
-        """Объём пула 50 SOL (< 100), velocity 1.5 — HOLD (нужно 2.0)."""
-        strategy = MomentumPumpStrategy()
-        # make_entry_context использует make_pool() без объёма (0) — холодный класс.
-        metrics = hot_metrics(buy_count=6).model_copy(
-            update={"buy_volume_sol": 1.2}  # velocity 1.2 < холодных 1.5
-        )
-        signal = strategy.evaluate_entry(make_entry_context(metrics))
-        # Обычный контекст: пул без объёма (0) — тоже холодный класс.
-        assert signal.action.value == "hold"
-        assert "Volume Velocity" in signal.reason
-
-    def test_cold_pool_strong_velocity_enters(self) -> None:
-        """Холодный пул с velocity 2.5 (>= 2.0) — вход разрешён."""
-        strategy = MomentumPumpStrategy()
-        metrics = hot_metrics(buy_count=8)  # velocity 2.5
-        signal = strategy.evaluate_entry(make_entry_context(metrics))
-        assert signal.action.value == "enter"
-
-    def test_warm_pool_uses_base_threshold(self) -> None:
-        """Пул с объёмом >= 100 — обычный порог (1.5/1.2 из настроек)."""
-        strategy = MomentumPumpStrategy()
-        pool = make_pool(volume_sol=200.0)
-        metrics = hot_metrics(buy_count=8).model_copy(
-            update={"buy_volume_sol": 1.9}  # velocity 1.9 >= обычных 1.8
-        )
-        context = FilterContext(
-            pool=pool,
-            trade_amount_sol=0.5,
-            security=clean_security(),
-            metrics=metrics,
-            timestamp=1000.0,
-        )
-        signal = strategy.evaluate_entry(context)
-        assert signal.action.value == "enter"
