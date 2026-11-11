@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from config.settings import settings
 from filters.base_filter import FilterChain, FilterContext
 from filters.liquidity_guard import LiquidityGuard
@@ -120,11 +122,11 @@ class TestEntry:
 
 
 class TestExitHardStop:
-    """Жёсткий стоп-лосс (-30% по умолчанию)."""
+    """Жёсткий стоп-лосс (порог задан явно)."""
 
     def test_price_below_stop_exits_full(self) -> None:
-        """Падение на 30% (порог по умолчанию) выводит всю позицию."""
-        strategy = MomentumPumpStrategy()
+        """Падение на 30% (порог задан) выводит всю позицию."""
+        strategy = MomentumPumpStrategy(hard_stop_loss_pct=30.0)
         position = make_position()
         metrics = hot_metrics(last_price=position.entry_price * 0.70)
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
@@ -133,28 +135,29 @@ class TestExitHardStop:
         assert signal.sell_fraction == 1.0
 
     def test_small_drawdown_holds(self) -> None:
-        """Падение на 5% не пробивает стоп."""
-        strategy = MomentumPumpStrategy()
+        """Падение на 5% не пробивает стоп (порог задан)."""
+        strategy = MomentumPumpStrategy(hard_stop_loss_pct=30.0)
         position = make_position()
         metrics = hot_metrics(last_price=position.entry_price * 0.95)
         assert strategy.evaluate_exit(position, make_exit_context(metrics)) is None
 
 
 class TestExitTakeProfit:
-    """Каскадный тейк-профит."""
+    """Каскадный тейк-профит (холодные уровни заданы явно)."""
 
     def test_tp1_sells_half(self) -> None:
         """+35% фиксирует 50% позиции как TP1."""
-        strategy = MomentumPumpStrategy()
+        strategy = MomentumPumpStrategy(tp1_cold_pct=10.0, tp2_cold_pct=15.0)
         position = make_position()
         metrics = hot_metrics(last_price=position.entry_price * 1.35)
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
         assert signal.exit_reason.value == "take_profit_1"
-        assert signal.sell_fraction == 0.5
+        # Доля фиксации берётся из настроек (TP1_SIZE_PCT).
+        assert signal.sell_fraction == pytest.approx(settings.tp1_size_pct / 100.0)
 
     def test_tp2_after_tp1_sells_rest(self) -> None:
         """После TP1 достижение +55% закрывает остаток как TP2."""
-        strategy = MomentumPumpStrategy()
+        strategy = MomentumPumpStrategy(tp2_cold_pct=15.0)
         position = make_position(tp1_taken=True)
         metrics = hot_metrics(last_price=position.entry_price * 1.55)
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
@@ -163,7 +166,7 @@ class TestExitTakeProfit:
 
     def test_tp1_level_after_tp1_taken_waits_tp2(self) -> None:
         """После TP1 уровень +12% не является сигналом (холодный TP2 = 15%)."""
-        strategy = MomentumPumpStrategy()
+        strategy = MomentumPumpStrategy(tp2_cold_pct=15.0)
         position = make_position(tp1_taken=True)
         metrics = hot_metrics(last_price=position.entry_price * 1.12)
         assert strategy.evaluate_exit(position, make_exit_context(metrics)) is None
@@ -183,7 +186,11 @@ class TestExitTrailing:
 
     def test_no_peak_above_entry_no_trailing(self) -> None:
         """Пик не выше входа — трейлинг не активен (это работа hard SL)."""
-        strategy = MomentumPumpStrategy()
+        strategy = MomentumPumpStrategy(
+            hard_stop_loss_pct=30.0,
+            tp1_cold_pct=10.0,
+            tp2_cold_pct=15.0,
+        )
         position = make_position(entry_price=1.0, peak_price=0.9)
         metrics = hot_metrics(last_price=0.70)  # -30% → сработает hard SL
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
@@ -191,7 +198,11 @@ class TestExitTrailing:
 
     def test_mild_pullback_holds(self) -> None:
         """Откат 6% от пика при PnL +8% — удерживаем (холодный уровень)."""
-        strategy = MomentumPumpStrategy()
+        strategy = MomentumPumpStrategy(
+            tp1_cold_pct=10.0,
+            trailing_stop_cold_pct=8.0,
+            trailing_activation_cold_pct=5.0,
+        )
         position = make_position(entry_price=1.0, peak_price=1.15)
         metrics = hot_metrics(last_price=1.08)  # откат 6.1%, PnL +8% < TP1 10%
         assert strategy.evaluate_exit(position, make_exit_context(metrics)) is None
@@ -376,8 +387,15 @@ class TestHotPool:
         )
 
     def test_hot_tp1_raises_target(self) -> None:
-        """Горячий пул: TP1 = 20%; тёплый = 15%; холодный = 10%."""
-        strategy = MomentumPumpStrategy()
+        """Горячий пул: TP1 = 20%; тёплый = 15%; холодный = 10% (явные уровни)."""
+        strategy = MomentumPumpStrategy(
+            tp1_cold_pct=10.0,
+            tp2_cold_pct=15.0,
+            tp1_warm_pct=15.0,
+            tp2_warm_pct=30.0,
+            tp1_hot_pct=20.0,
+            tp2_hot_pct=40.0,
+        )
         position = make_position(entry_price=1.0)
         metrics = hot_metrics(last_price=1.16)  # PnL +16%
         # Холодный пул (объём 0): TP1 10% — выход.
@@ -402,8 +420,14 @@ class TestHotPool:
         assert signal.exit_reason.value == "take_profit_2"
 
     def test_hot_trailing_activation_higher(self) -> None:
-        """Горячий пул: пик +20% (>= обычной активации 15, < горячей 25) — трейлинг молчит."""
-        strategy = MomentumPumpStrategy()
+        """Горячий пул: пик +20% (< горячей активации 25) — трейлинг молчит."""
+        strategy = MomentumPumpStrategy(
+            trailing_activation_hot_pct=25.0,
+            trailing_stop_pct=30.0,
+            tp1_hot_pct=99.0,
+            tp1_pct=99.0,
+            tp1_cold_pct=99.0,
+        )
         position = make_position(entry_price=1.0, peak_price=1.20)
         metrics = hot_metrics(last_price=0.94)  # откат 21.7% от пика
         # Обычный пул: трейлинг сработал бы.
@@ -446,10 +470,13 @@ class TestTieredHardStop:
         assert strategy.evaluate_exit(position, make_exit_context(metrics)) is None
 
     def test_zero_stop_falls_back_to_base(self) -> None:
-        """stop_loss_pct=0 (бэктест/реплей) — базовый стоп 30%."""
+        """stop_loss_pct=0 (бэктест/реплей) — базовый стоп из настроек."""
         strategy = MomentumPumpStrategy()
         position = make_position(entry_price=1.0)
-        metrics = hot_metrics(last_price=0.70)
+        metrics = hot_metrics(
+            last_price=position.entry_price
+            * (1.0 - settings.hard_stop_loss_pct / 100.0 - 0.01)
+        )
         signal = strategy.evaluate_exit(position, make_exit_context(metrics))
         assert signal is not None
         assert signal.exit_reason.value == "hard_stop_loss"

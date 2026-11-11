@@ -181,7 +181,7 @@ padding:3px 12px;font-size:12px;color:var(--dim)}
         <label>ссылка / mint:</label>
         <input id="bt_url" style="flex:1;min-width:280px" placeholder="https://pump.fun/coin/<MINT> или адрес mint">
         <label>транзакций:</label>
-        <input id="bt_maxtx" type="number" value="500" min="50" max="1000" style="width:90px">
+        <input id="bt_maxtx" type="number" value="150" min="50" max="300" style="width:90px">
       </div>
       <div id="bt_csv_row" style="display:none">
         <div class="btrow">
@@ -319,7 +319,8 @@ function render(d){
    <div class="row"><span class="k">продажи</span><span>${fmt(fl.sells||0,0)}</span></div>${bar(fl.sells||0,'var(--red)')}
    <div class="row"><span class="k">пулов в работе</span><span>${fl.pools??0}</span></div>
    <div class="row"><span class="k">очередь / потерь</span><span>${fl.queue_size??0}/${fl.dropped??0}</span></div>
-   <div class="row"><span class="k">ошибки разбора</span><span class="${(fl.parse_errors||0)>0?'warn':''}">${fl.parse_errors??0}</span></div>`;
+   <div class="row"><span class="k">ошибки разбора</span><span class="${(fl.parse_errors||0)>0?'warn':''}">${fl.parse_errors??0}</span></div>
+   <div class="row"><span class="k">Helius credits (оценка)</span><span>${(d.session||{}).helius_credits??0}</span></div>`;
 
   const sc=d.screening||{};
   const hr=Object.entries(sc.hold_reasons||{});
@@ -554,7 +555,7 @@ function btCollect(){const p={mode:btMode,
  trailing_activation_warm_pct:+$('bt_warmact').value||7,
  max_entries_per_mint:+$('bt_entries').value||4,
  token_reliable_seconds:+$('bt_reliable').value||0};
- if(btMode==='mint'){p.url=$('bt_url').value.trim();p.max_tx=+$('bt_maxtx').value||500}
+ if(btMode==='mint'){p.url=$('bt_url').value.trim();p.max_tx=Math.min(300,+$('bt_maxtx').value||150)}
  else{p.csv=$('bt_csv').value;p.initial_sol=+$('bt_initsol').value||90;
   p.initial_token=+$('bt_inittoken').value||600000000}
  return p}

@@ -190,8 +190,9 @@ class TokenScreeningService:
         mint = pool.base_mint
         if mint in self._queued:
             return False
-        if self.verdict(mint) is not None:
-            return False  # свежий вердикт уже есть
+        verdict = self._verdicts.get(mint)
+        if verdict is not None and not self._is_stale(verdict, pool):
+            return False  # свежий вердикт уже есть (миграция = stale)
         try:
             self._queue.put_nowait(pool)
         except asyncio.QueueFull:
@@ -288,7 +289,7 @@ class TokenScreeningService:
             if self.submit(pool):
                 logger.debug("Отбор: {} поставлен в очередь при первом входе", mint)
             return None
-        if self._is_stale(verdict):
+        if self._is_stale(verdict, pool):
             if self.submit(pool):
                 self.stats.resubmitted += 1
             return None
@@ -300,12 +301,26 @@ class TokenScreeningService:
     async def screen(self, pool: PoolInfo) -> ScreeningVerdict:
         """Проверяет контракт токена по правилам security-контура.
 
+        Bonding curve без LP проверяется **без RPC**: у кривой нет
+        LP-токенов (проверка не применима), authority-правила отменены —
+        вердикт формируется локально (экономия кредитов Helius).
+        LP-проверка по сети выполняется только для AMM-стадии; при
+        миграции токена вердикт кривой устаревает и пересматривается.
+
         Args:
             pool: Снимок пула.
 
         Returns:
             :class:`~models.trade_data.ScreeningVerdict` (approved/rejected).
         """
+        if pool.lp_mint is None:
+            return ScreeningVerdict(
+                base_mint=pool.base_mint,
+                approved=True,
+                reason="bonding curve — LP-проверка не применима",
+                lp_burned_pct=100.0,
+                checked_at=time.time(),
+            )
         security = await self._resolver.resolve(
             base_mint=pool.base_mint,
             dex=pool.dex,
@@ -368,15 +383,25 @@ class TokenScreeningService:
             checked_at=time.time(),
         )
 
-    def _is_stale(self, verdict: ScreeningVerdict) -> bool:
+    def _is_stale(self, verdict: ScreeningVerdict, pool: PoolInfo | None = None) -> bool:
         """Проверяет устаревание вердикта.
+
+        Вердикт bonding curve устаревает досрочно, если токен мигрировал
+        на AMM (у пула появился lp_mint) — требуется LP-проверка.
 
         Args:
             verdict: Проверяемый вердикт.
+            pool: Текущий пул (для детекта миграции; опционально).
 
         Returns:
-            ``True``, если вердикту больше ``recheck_seconds``.
+            ``True``, если вердикт надо пересмотреть.
         """
+        if (
+            pool is not None
+            and pool.lp_mint is not None
+            and verdict.reason.startswith("bonding curve")
+        ):
+            return True
         if self._recheck_seconds <= 0:
             return False
         return verdict.age_seconds() >= self._recheck_seconds

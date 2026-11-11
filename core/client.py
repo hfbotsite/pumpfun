@@ -154,6 +154,20 @@ class SolanaRpcClient:
         )
         self._latency = latency or LatencyRegistry()
         self._rpc_stats: LatencyStats = self._latency.get("rpc")
+        # Оценка расхода кредитов Helius: вес ~ по тарифной сетке.
+        self._CREDIT_WEIGHTS: dict[str, int] = {
+            "getAccountInfo": 30,
+            "getMultipleAccounts": 30,
+            "getTokenSupply": 30,
+            "getProgramAccounts": 300,
+            "getSignaturesForAddress": 90,
+            "getTransaction": 90,
+            "getSignatureStatuses": 10,
+            "getLatestBlockhash": 10,
+            "sendTransaction": 15,
+            "getBalance": 10,
+        }
+        self.credits_spent: int = 0
         self._session: aiohttp.ClientSession | None = None
         self._request_id: int = 0
         self._closed: bool = False
@@ -200,6 +214,15 @@ class SolanaRpcClient:
         self._request_id += 1
         return self._request_id
 
+    def credit_estimate(self) -> int:
+        """Оценка израсходованных кредитов Helius за сессию.
+
+        Returns:
+            Суммарный вес выполненных HTTP-вызовов (приближение тарифной
+            сетки Helius; точные веса зависят от плана).
+        """
+        return self.credits_spent
+
     async def _call(
         self,
         method: str,
@@ -232,6 +255,7 @@ class SolanaRpcClient:
             "method": method,
             "params": params or [],
         }
+        self.credits_spent += self._CREDIT_WEIGHTS.get(method, 10)
         last_error: Exception | None = None
 
         for attempt in range(attempts + 1):

@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from config.settings import settings as _settings
 from core.persistence import PortfolioStore
 from core.pipeline import LivePipeline
 from core.portfolio import PortfolioManager
@@ -337,11 +338,17 @@ class TestTieredStopLoss:
     """Стоп-лосс тирируется по объёму пула и фиксируется на входе."""
 
     def test_stop_pct_by_pool_volume(self) -> None:
-        """hot (>=300) → 40, cold (<100) → 22, средний → базовый 30."""
+        """Тиры стопа по объёму (значения берутся из настроек окружения)."""
         trader = make_fresh_trader(ManualExecutor())
-        assert trader._stop_pct_for_pool(make_pool(volume_sol=500.0)) == 40.0
-        assert trader._stop_pct_for_pool(make_pool(volume_sol=50.0)) == 22.0
-        assert trader._stop_pct_for_pool(make_pool(volume_sol=200.0)) == 30.0
+        assert trader._stop_pct_for_pool(
+            make_pool(volume_sol=500.0)
+        ) == _settings.hard_stop_hot_pct
+        assert trader._stop_pct_for_pool(
+            make_pool(volume_sol=50.0)
+        ) == _settings.hard_stop_cold_pct
+        assert trader._stop_pct_for_pool(
+            make_pool(volume_sol=200.0)
+        ) == _settings.hard_stop_loss_pct
 
     async def test_entry_persists_stop_pct(self, tmp_path) -> None:
         """Открытая позиция несёт свой стоп и переживает write-through."""
@@ -357,9 +364,10 @@ class TestTieredStopLoss:
         await trader.process_event(hot_event(timestamp=1000.0), pool)
         position = trader.portfolio.get(BASE_MINT)
         assert position is not None
-        assert position.stop_loss_pct == 40.0
+        expected = _settings.hard_stop_hot_pct
+        assert position.stop_loss_pct == expected
         loaded = store.load_open_positions()
-        assert loaded and loaded[0].stop_loss_pct == 40.0
+        assert loaded and loaded[0].stop_loss_pct == expected
         store.close()
 
 
@@ -454,8 +462,11 @@ class TestAverageOnlyInProfit:
             opened_at=1000.0,
         )
 
-    async def test_average_below_entry_blocked(self) -> None:
-        """Цена ниже входа — докупки нет (Even при ENTER-сигнале)."""
+    async def test_average_below_entry_blocked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Цена ниже входа — докупки нет (даже при ENTER-сигнале)."""
+        monkeypatch.setattr(_settings, "average_only_in_profit", True)
         executor = ManualExecutor()
         trader = MomentumTrader(
             executor=executor,
@@ -476,8 +487,11 @@ class TestAverageOnlyInProfit:
         assert position is not None
         assert position.token_amount == 1_000_000
 
-    async def test_average_at_entry_allowed(self) -> None:
+    async def test_average_at_entry_allowed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Цена на уровне входа (PnL 0) — усреднение работает."""
+        monkeypatch.setattr(_settings, "average_only_in_profit", True)
         executor = ManualExecutor()
         executor.buy_results = [buy_result(500_000)]
         trader = MomentumTrader(

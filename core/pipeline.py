@@ -206,6 +206,14 @@ class LivePipeline:
         self._trading_active: bool = False
         self._consume_task: asyncio.Task[None] | None = None
         self._trading_started_at: float = 0.0
+        # Кэш восстановления пулов: mint -> (ts, tracked|None). Негативная
+        # запись (None) удерживает свип от долбёжки RPC каждые 5 c.
+        self._recovery_cache: dict[str, tuple[float, TrackedPool | None]] = {}
+        # Кэш истории сделок для бэктеста mint: mint -> (ts, entries).
+        # entries = список (block_time, signature, PumpTradeEvent).
+        self._backtest_tx_cache: dict[str, tuple[float, list]] = {}
+        # Кэш подписок (getSignaturesForAddress): mint -> (ts, signatures).
+        self._signatures_cache: dict[str, tuple[float, list]] = {}
         self._sweep_task: asyncio.Task[None] | None = None
         self._fully_stopped = asyncio.Event()
         self._portfolio: PortfolioManager | None = None
@@ -628,6 +636,9 @@ class LivePipeline:
                 if trader is not None
                 else 0.0,
                 "capital_sol": self._capital_sol,
+                "helius_credits": (
+                    self._rpc.credit_estimate() if self._rpc is not None else 0
+                ),
             },
             "positions": positions,
             "unrealized_sol": unrealized_total,
@@ -733,6 +744,34 @@ class LivePipeline:
         pool = self._listener.registry.get(pool_address)
         return pool is None or pool.lp_mint is None
 
+    async def _recover_tracked(self, mint: str) -> TrackedPool | None:
+        """Восстанавливает пул по mint с кэшем (негативный 120 c, позитив 60 c).
+
+        Кэш удерживает свип от долбёжки RPC каждые 5 c по мёртвым позам.
+
+        Args:
+            mint: Mint мемкоина.
+
+        Returns:
+            Восстановленный :class:`TrackedPool` или ``None``.
+        """
+        cached = self._recovery_cache.get(mint)
+        if cached is not None:
+            cached_at, cached_pool = cached
+            ttl = 60.0 if cached_pool is not None else 120.0
+            if time.time() - cached_at < ttl:
+                return cached_pool
+        listener = self._listener
+        if listener is None:
+            return None
+        try:
+            tracked = await listener.register_pool_from_mint(mint)
+        except RpcError as exc:
+            tracked = None
+            logger.debug("Восстановление пула {} не удалось: {}", mint, exc)
+        self._recovery_cache[mint] = (time.time(), tracked)
+        return tracked
+
     async def _pool_for_mint(
         self, mint: str
     ) -> tuple[PoolInfo | None, str | None, str | None]:
@@ -760,13 +799,7 @@ class LivePipeline:
             return None, None, "слушатель недоступен"
         tracked = listener.registry.get(position.pool_address)
         if tracked is None:
-            try:
-                tracked = await listener.register_pool_from_mint(mint)
-            except RpcError as exc:
-                tracked = None
-                logger.debug(
-                    "Восстановление пула {} не удалось: {}", mint, exc
-                )
+            tracked = await self._recover_tracked(mint)
             if tracked is None:
                 return (
                     None,
@@ -1500,6 +1533,125 @@ class LivePipeline:
 
         return {"ok": False, "error": f"неизвестный режим бэктеста: {mode or 'пусто'}"}
 
+    async def _backtest_cached_entries(
+        self,
+        entries: list,
+        *,
+        mint: str,
+        trade_amount_sol: float,
+        entry_window: float,
+        exit_window: float,
+        max_positions: int,
+        strategy_kwargs: dict[str, Any] | None = None,
+        trader_kwargs: dict[str, Any] | None = None,
+    ) -> dict[str, object]:
+        """Бэктест из кэшированной истории сделок (0 RPC)."""
+        first_time, _first_sig, first_parsed = entries[0]
+        events = [
+            TradeEvent(
+                signature=signature,
+                pool_address="cached",
+                base_mint=mint,
+                dex=DEXType.PUMP_FUN,
+                side=TradeSide.BUY if parsed.is_buy else TradeSide.SELL,
+                sol_amount=parsed.sol_amount / 10**SOL_DECIMALS,
+                token_amount=parsed.token_amount
+                / float(10**PUMP_TOKEN_DECIMALS),
+                wallet=parsed.user,
+                timestamp=block_time
+                if block_time > 0
+                else first_time + index * 0.001,
+            )
+            for index, (block_time, signature, parsed) in enumerate(
+                entries[1:], start=1
+            )
+        ]
+        return await self._backtest_events(
+            events,
+            quote_reserve=first_parsed.virtual_sol_reserves,
+            base_reserve=first_parsed.virtual_token_reserves,
+            creator=first_parsed.user,
+            trade_amount_sol=trade_amount_sol,
+            entry_window=entry_window,
+            exit_window=exit_window,
+            max_positions=max_positions,
+            strategy_kwargs=strategy_kwargs,
+            trader_kwargs=trader_kwargs,
+        )
+
+    async def _fetch_mint_entries(
+        self,
+        mint: str,
+        curve_address: str,
+        rpc: SolanaRpcClient,
+        limit: int,
+    ) -> tuple[list, SolanaRpcClient | None]:
+        """Скачивает историю сделок кривой: подписи → транзакции → entries.
+
+        Подписи кэшируются 5 мин; Helius недоступен — фолбэк на публичный
+        RPC (жёсткие rate limits).
+
+        Args:
+            mint: Mint мемкоина.
+            curve_address: Адрес bonding curve.
+            rpc: RPC-клиент (может подмениться фолбэком).
+            limit: Максимум подписок.
+
+        Returns:
+            Пара (entries, fallback_client) — entries список
+            ``(block_time, signature, PumpTradeEvent)``.
+        """
+        fallback_client: SolanaRpcClient | None = None
+        try:
+            cached_sigs = self._signatures_cache.get(f"{mint}:{limit}")
+            signatures = None
+            if cached_sigs is not None and time.time() - cached_sigs[0] < 300:
+                signatures = cached_sigs[1]
+            if signatures is None:
+                signatures = await rpc.get_signatures_for_address(
+                    curve_address, limit=limit
+                )
+                self._signatures_cache[f"{mint}:{limit}"] = (
+                    time.time(),
+                    signatures,
+                )
+        except RpcError as exc:
+            logger.warning(
+                "Helius RPC не ответил ({}), переключаюсь на публичный RPC",
+                exc,
+            )
+            fallback_client = SolanaRpcClient(http_url=PUBLIC_MAINNET_RPC)
+            await fallback_client.start()
+            rpc = fallback_client
+            signatures = await rpc.get_signatures_for_address(
+                curve_address, limit=limit
+            )
+
+        # Параллельная загрузка: 150 транзакций последовательно = минуты.
+        semaphore = asyncio.Semaphore(8)
+
+        async def _fetch(info: dict[str, Any]) -> dict[str, Any] | None:
+            async with semaphore:
+                try:
+                    return await rpc.get_transaction(
+                        str(info.get("signature", ""))
+                    )
+                except RpcError as tx_exc:
+                    logger.debug("getTransaction не удался: {}", tx_exc)
+                    return None
+
+        transactions = await asyncio.gather(*(_fetch(info) for info in signatures))
+        entries: list[tuple[float, str, PumpTradeEvent]] = []
+        for info, tx in zip(signatures, transactions, strict=True):
+            if not tx:
+                continue
+            signature = str(info.get("signature", ""))
+            logs = (tx.get("meta") or {}).get("logMessages") or []
+            block_time = float(tx.get("blockTime") or 0)
+            for parsed in extract_pump_trade_events(logs):
+                entries.append((block_time, signature, parsed))
+        return entries, fallback_client
+
     async def _backtest_from_mint(
         self,
         payload: dict[str, Any],
@@ -1535,52 +1687,29 @@ class LivePipeline:
             curve_address = str(derive_bonding_curve(mint))
         except Exception as exc:
             return {"ok": False, "error": f"не удалось вывести bonding curve: {exc}"}
-        limit = min(1000, max(50, int(payload.get("max_tx", 500))))
-        fallback_client: SolanaRpcClient | None = None
+        limit = min(300, max(50, int(payload.get("max_tx", 150))))
+        # Кэш истории: повторный бэктест того же mint = 0 RPC (TTL 10 мин).
+        cached_entries = self._backtest_tx_cache.get(mint)
+        if cached_entries is not None:
+            cached_at, entries = cached_entries
+            if time.time() - cached_at < 600 and len(entries) >= 5:
+                logger.info(
+                    "Бэктест {}: история из кэша ({} событий, 0 RPC)", mint, len(entries)
+                )
+                return await self._backtest_cached_entries(
+                    entries,
+                    mint=mint,
+                    trade_amount_sol=trade_amount_sol,
+                    entry_window=entry_window,
+                    exit_window=exit_window,
+                    max_positions=max_positions,
+                    strategy_kwargs=strategy_kwargs,
+                    trader_kwargs=trader_kwargs,
+                )
+        entries, fallback_client = await self._fetch_mint_entries(
+            mint, curve_address, rpc, limit
+        )
         try:
-            try:
-                signatures = await rpc.get_signatures_for_address(
-                    curve_address, limit=limit
-                )
-            except RpcError as exc:
-                # Helius недоступен/не настроен — пробуем публичный Solana RPC
-                # (работает без ключа, но с жёсткими rate limits).
-                logger.warning(
-                    "Helius RPC не ответил ({}), переключаюсь на публичный RPC",
-                    exc,
-                )
-                fallback_client = SolanaRpcClient(http_url=PUBLIC_MAINNET_RPC)
-                await fallback_client.start()
-                rpc = fallback_client
-                signatures = await rpc.get_signatures_for_address(
-                    curve_address, limit=limit
-                )
-
-            # Параллельная загрузка: 500 транзакций последовательно = минуты.
-            semaphore = asyncio.Semaphore(8)
-
-            async def _fetch(info: dict[str, Any]) -> dict[str, Any] | None:
-                async with semaphore:
-                    try:
-                        return await rpc.get_transaction(
-                            str(info.get("signature", ""))
-                        )
-                    except RpcError as tx_exc:
-                        logger.debug("getTransaction не удался: {}", tx_exc)
-                        return None
-
-            transactions = await asyncio.gather(
-                *(_fetch(info) for info in signatures)
-            )
-            entries: list[tuple[float, str, PumpTradeEvent]] = []
-            for info, tx in zip(signatures, transactions, strict=True):
-                if not tx:
-                    continue
-                signature = str(info.get("signature", ""))
-                logs = (tx.get("meta") or {}).get("logMessages") or []
-                block_time = float(tx.get("blockTime") or 0)
-                for parsed in extract_pump_trade_events(logs):
-                    entries.append((block_time, signature, parsed))
             if len(entries) < 5:
                 return {
                     "ok": False,
@@ -1589,6 +1718,7 @@ class LivePipeline:
                         "(токен мог мигрировать на AMM — нужен Jupiter-режим)"
                     ),
                 }
+            self._backtest_tx_cache[mint] = (time.time(), list(entries))
             entries.sort(key=lambda item: item[0])
             first_time, _first_sig, first_parsed = entries[0]
             events = [
@@ -1620,6 +1750,8 @@ class LivePipeline:
                 exit_window=exit_window,
                 max_positions=max_positions,
                 cancel_event=self._backtest_stop,
+                strategy_kwargs=strategy_kwargs,
+                trader_kwargs=trader_kwargs,
             )
         finally:
             if fallback_client is not None:

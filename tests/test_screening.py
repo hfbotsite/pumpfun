@@ -76,9 +76,9 @@ class TestScreenRules:
     """Правила применения security-контура в screen()."""
 
     async def test_clean_token_approved(self) -> None:
-        """Чистый контракт получает одобрение с данными проверки."""
+        """Чистый контракт (AMM-стадия) получает одобрение с данными."""
         service = TokenScreeningService(FakeResolver(clean_security()))
-        verdict = await service.screen(make_pool())
+        verdict = await service.screen(make_pool(lp_mint="LP1111111111111111111111111111111111111111"))
         assert verdict.approved
         assert verdict.base_mint == BASE_MINT
         assert verdict.reason == "контракт чист"
@@ -91,7 +91,9 @@ class TestScreenRules:
             update={"mint_authority": "Auth", "freeze_authority": "Freeze"}
         )
         service = TokenScreeningService(FakeResolver(dirty))
-        verdict = await service.screen(make_pool())
+        verdict = await service.screen(
+            make_pool(lp_mint="LP1111111111111111111111111111111111111111")
+        )
         assert verdict.approved
         assert verdict.reason == "контракт чист"
 
@@ -99,18 +101,32 @@ class TestScreenRules:
         """LP сожжён ниже порога — отказ."""
         dirty = clean_security().model_copy(update={"lp_burned_pct": 40.0})
         service = TokenScreeningService(FakeResolver(dirty))
-        verdict = await service.screen(make_pool())
+        verdict = await service.screen(
+            make_pool(lp_mint="LP1111111111111111111111111111111111111111")
+        )
         assert not verdict.approved
         assert "LP" in verdict.reason
 
     async def test_missing_security_approved_by_other_filters(self) -> None:
-        """Сбой RPC (нет данных) — НЕ отказ: решают фильтры входа."""
+        """Сбой RPC (нет данных) на AMM-стадии — НЕ отказ: решают фильтры."""
         service = TokenScreeningService(FakeResolver(None))
-        verdict = await service.screen(make_pool())
+        verdict = await service.screen(
+            make_pool(lp_mint="LP1111111111111111111111111111111111111111")
+        )
         assert verdict.approved
         assert "данные безопасности недоступны" in verdict.reason
         # to_security() от такого вердикта проходит SecurityGuard.
         assert verdict.to_security().lp_burned_pct == 100.0
+
+
+    async def test_curve_pool_no_rpc(self) -> None:
+        """Bonding curve: вердикт без резолвера (0 RPC), LP N/A."""
+        resolver = FakeResolver(clean_security())
+        service = TokenScreeningService(resolver)
+        verdict = await service.screen(make_pool())
+        assert verdict.approved
+        assert verdict.reason.startswith("bonding curve")
+        assert resolver.calls == 0
 
 
 class TestWorkerAndProvider:
@@ -122,7 +138,7 @@ class TestWorkerAndProvider:
         service = TokenScreeningService(resolver)
         await service.start()
         try:
-            assert service.submit(make_pool()) is True
+            assert service.submit(make_pool(lp_mint="LP1111111111111111111111111111111111111111")) is True
             await wait_until(lambda: service.verdict(BASE_MINT) is not None)
             verdict = service.verdict(BASE_MINT)
             assert verdict is not None and verdict.approved
@@ -149,9 +165,9 @@ class TestWorkerAndProvider:
         service = TokenScreeningService(FakeResolver(dirty))
         await service.start()
         try:
-            service.submit(make_pool())
+            service.submit(make_pool(lp_mint="LP1111111111111111111111111111111111111111"))
             await wait_until(lambda: service.status(BASE_MINT) == "rejected")
-            assert await service.provider(make_pool()) is None
+            assert await service.provider(make_pool(lp_mint="LP1111111111111111111111111111111111111111")) is None
             assert service.status(BASE_MINT) == "rejected"
             assert service.stats.rejected == 1
         finally:
@@ -160,8 +176,8 @@ class TestWorkerAndProvider:
     async def test_dedup_submit(self) -> None:
         """Повторный submit до завершения проверки игнорируется."""
         service = TokenScreeningService(FakeResolver(clean_security()))
-        assert service.submit(make_pool()) is True
-        assert service.submit(make_pool()) is False
+        assert service.submit(make_pool(lp_mint="LP1111111111111111111111111111111111111111")) is True
+        assert service.submit(make_pool(lp_mint="LP1111111111111111111111111111111111111111")) is False
         assert service.status(BASE_MINT) == "pending"
 
     async def test_stale_verdict_triggers_rescreen(self) -> None:
@@ -170,13 +186,20 @@ class TestWorkerAndProvider:
         service = TokenScreeningService(resolver, recheck_seconds=0.05)
         await service.start()
         try:
-            service.submit(make_pool())
+            service.submit(
+                make_pool(lp_mint="LP1111111111111111111111111111111111111111")
+            )
             await wait_until(lambda: service.verdict(BASE_MINT) is not None)
             assert resolver.calls == 1
             await asyncio.sleep(0.08)  # вердикт устарел
             assert service.verdict(BASE_MINT) is None
             assert service.status(BASE_MINT) == "stale"
-            assert await service.provider(make_pool()) is None
+            assert (
+                await service.provider(
+                    make_pool(lp_mint="LP1111111111111111111111111111111111111111")
+                )
+                is None
+            )
             assert service.stats.resubmitted == 1
             await wait_until(lambda: resolver.calls >= 2)
         finally:
@@ -195,7 +218,9 @@ class TestWorkerAndProvider:
         )
         await service.start()
         try:
-            service.submit(make_pool())
+            service.submit(
+                make_pool(lp_mint="LP1111111111111111111111111111111111111111")
+            )
             await wait_until(lambda: len(rejected) == 1)
             assert rejected[0].approved is False
         finally:
@@ -220,7 +245,9 @@ class TestPersistenceRoundtrip:
         )
         await service.start()
         try:
-            service.submit(make_pool())
+            service.submit(
+                make_pool(lp_mint="LP1111111111111111111111111111111111111111")
+            )
             await wait_until(lambda: service.stats.screened == 1)
         finally:
             await service.stop()
@@ -271,3 +298,33 @@ def test_pool_info_snapshot_for_screening() -> None:
     pool: PoolInfo = make_pool()
     assert pool.base_mint == BASE_MINT
     assert pool.dex == DEXType.PUMP_FUN
+
+
+class TestMigrationRescreen:
+    """Вердикт кривой устаревает при миграции токена на AMM."""
+
+    async def test_curve_verdict_stale_after_migration(self) -> None:
+        """Вердикт кривой + пул с lp_mint → stale → ре-скрин с RPC."""
+        resolver = FakeResolver(clean_security())
+        service = TokenScreeningService(resolver, recheck_seconds=3600)
+        await service.start()
+        try:
+            # Кривой пул: вердикт без RPC.
+            curve_pool = make_pool()
+            service.submit(curve_pool)
+            await wait_until(lambda: service.verdict(BASE_MINT) is not None)
+            assert resolver.calls == 0
+            # Токен мигрировал: у пула появился lp_mint → вердикт stale.
+            amm_pool = make_pool(lp_mint="LP1111111111111111111111111111111111111111")
+            assert service._is_stale(service.verdict(BASE_MINT), amm_pool)
+            # Первый вызов ставит в очередь (вердикт ещё старый) → None.
+            assert await service.provider(amm_pool) is None
+            await wait_until(lambda: resolver.calls == 1)
+            await wait_until(
+                lambda: service.verdict(BASE_MINT) is not None
+                and service.verdict(BASE_MINT).reason == "контракт чист"
+            )
+            security = await service.provider(amm_pool)
+            assert security is not None
+        finally:
+            await service.stop()

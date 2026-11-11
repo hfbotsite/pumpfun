@@ -109,7 +109,7 @@ class TestScreeningCounts:
         service = TokenScreeningService(FakeResolver(clean_security()))
         await service.start()
         try:
-            service.submit(make_pool())
+            service.submit(make_pool(lp_mint="LP1111111111111111111111111111111111111111"))
             await wait_until(lambda: service.counts()["approved"] == 1)
         finally:
             await service.stop()
@@ -123,7 +123,7 @@ class TestScreeningCounts:
         service2 = TokenScreeningService(FakeResolver(dirty))
         await service2.start()
         try:
-            service2.submit(make_pool())
+            service2.submit(make_pool(lp_mint="LP1111111111111111111111111111111111111111"))
             await wait_until(lambda: service2.counts()["rejected"] == 1)
             rejections = service2.recent_rejections()
             assert len(rejections) == 1

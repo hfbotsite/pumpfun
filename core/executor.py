@@ -771,6 +771,9 @@ class OrderExecutor:
                     return True, status.slot, None
             if time.monotonic() >= deadline:
                 return False, None, None
+            # Экспоненциальный бэктрейс: меньше вызовов getSignatureStatuses
+            # (экономия кредитов) при той же чувствительности.
+            poll = min(poll * 1.6, 2.0)
             await asyncio.sleep(max(0.05, poll))
 
     def _compile_and_sign(
