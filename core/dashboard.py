@@ -323,13 +323,14 @@ function render(d){
 
   const sc=d.screening||{};
   const hr=Object.entries(sc.hold_reasons||{});
+  const holdSum=hr.reduce((a,[,v])=>a+v,0);
   const hrHtml=hr.length
     ?`<div class="k" style="margin-top:8px">почему нет входа (воронка фильтров):</div>`+
      hr.map(([k,v])=>`<div class="row"><span class="k">${esc(k)}</span><span>${v}</span></div>`).join('')
     :'';
   $('screen').innerHTML=`
    <div class="row"><span class="k">одобрено</span><span class="pos">${sc.approved??0}</span></div>
-   <div class="row"><span class="k">отклонено</span><span class="neg">${sc.rejected??0}</span></div>
+   <div class="row"><span class="k">отклонено</span><span class="neg">${(sc.rejected??0)+holdSum}</span></div>
    ${hrHtml}`;
 
   const lat=(d.stream&&d.stream.latency)||{};
